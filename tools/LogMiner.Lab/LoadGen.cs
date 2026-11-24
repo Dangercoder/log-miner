@@ -9,7 +9,7 @@ namespace LogMiner.Lab;
 /// <summary>
 /// The application, in its own process: inserts into random tenant databases over warm connections (one per database, opened before the
 /// start), stamping client_ts = when the application issued the insert. Prints READY, starts on a line from stdin, and writes every
-/// "client_ts tenant" to a file.   lab load --out file [--dbs 1200] [--tps 200] [--seconds 40] [--writers 16]
+/// "client_ts tenant" to a file.   lab load --out file [--prefix lmbench_] [--dbs 100] [--tps 200] [--seconds 40] [--writers 16]
 /// </summary>
 internal static class LoadGen
 {
@@ -17,16 +17,17 @@ internal static class LoadGen
 
     public static async Task<int> Run(string[] args)
     {
-        var dbs = int.Parse(Program.Opt(args, "--dbs") ?? "1200", CultureInfo.InvariantCulture);
+        var dbs = int.Parse(Program.Opt(args, "--dbs") ?? "100", CultureInfo.InvariantCulture);
         var tps = int.Parse(Program.Opt(args, "--tps") ?? "200", CultureInfo.InvariantCulture);
         var seconds = int.Parse(Program.Opt(args, "--seconds") ?? "40", CultureInfo.InvariantCulture);
         var writers = int.Parse(Program.Opt(args, "--writers") ?? "16", CultureInfo.InvariantCulture);
+        var prefix = Program.Opt(args, "--prefix") ?? "lmbench_";
         var outFile = Program.Opt(args, "--out") ?? throw new ArgumentException("--out");
         _ = timeBeginPeriod(1);
         var conns = new SqlConnection[dbs + 1];
         await Parallel.ForEachAsync(Enumerable.Range(1, dbs), new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (db, ct) =>
         {
-            conns[db] = new SqlConnection(Program.ConnectionString($"tenant_{db:D4}").Replace("logminer-lab", "logminer-lab-load", StringComparison.Ordinal) + ";Pooling=false");
+            conns[db] = new SqlConnection(Program.ConnectionString($"{prefix}{db:D4}").Replace("logminer-lab", "logminer-lab-load", StringComparison.Ordinal) + ";Pooling=false");
             await conns[db].OpenAsync(ct);
             // warm the plan and the connection without writing anything
             await using var cmd = Insert(conns[db], 0, 0, 0);

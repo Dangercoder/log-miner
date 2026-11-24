@@ -11,7 +11,8 @@ namespace LogMiner.Lab;
 
 /// <summary>
 /// The real thing: logminer.exe, the load and the consumer are three processes.
-///   lab service [--dbs 1200] [--tps 200] [--seconds 40] [--dispatch-ms 4] [--push true] [--warm-s 45] [--drop-s 10] [--kill-s 20]
+/// The load goes to throwaway databases (lab bench-dbs); everything else that is captured is only read, and no log is released.
+///   lab service [--prefix lmbench_] [--dbs 100] [--also tenant_*] [--tps 200] [--seconds 40] [--dispatch-ms 4] [--push true] [--warm-s 45] [--drop-s 10] [--kill-s 20]
 /// --drop-s drops the event session that many seconds into the load, --kill-s kills the service and starts it again.
 /// </summary>
 internal static class ServiceBench
@@ -19,10 +20,13 @@ internal static class ServiceBench
     public static async Task<int> Run(string[] args)
     {
         string Arg(string name, string fallback) => Program.Opt(args, name) ?? fallback;
-        var (dbs, tps, seconds) = (Arg("--dbs", "1200"), Arg("--tps", "200"), Arg("--seconds", "40"));
+        var (dbs, tps, seconds) = (Arg("--dbs", "100"), Arg("--tps", "200"), Arg("--seconds", "40"));
+        var (prefix, also, release, exeArg) = (Arg("--prefix", "lmbench_"), Arg("--also", "tenant_*"), Arg("--release", "false"), Arg("--exe", ""));
+        if (release == "true" && also != "none") { Console.WriteLine("--release true needs --also none: the log of databases this benchmark does not own is not its to release"); return 2; }
         var repo = AppContext.BaseDirectory;
         while (!File.Exists(Path.Combine(repo, "LogMiner.slnx"))) repo = Path.GetDirectoryName(repo.TrimEnd('\\')) ?? throw new DirectoryNotFoundException("LogMiner.slnx");
         var exe = Path.Combine(repo, "src", "LogMiner.Service", "bin", "Release", "net10.0", "logminer.exe");
+        if (exeArg.Length > 0) exe = exeArg;
         var work = Directory.CreateTempSubdirectory("logminer-bench-").FullName;
         await using var nats = new NatsConnection(new NatsOpts { Url = "nats://127.0.0.1:4222", Name = "lab-service-consumer" });
         await nats.ConnectAsync();
@@ -35,7 +39,7 @@ internal static class ServiceBench
             ["ServerName"] = "bench", ["StartPosition"] = "Latest", ["State__Type"] = "File", ["State__File"] = Path.Combine(work, "checkpoints.lmc"),
             ["Signal__DispatchIntervalMs"] = Arg("--dispatch-ms", "4"), ["Signal__Push"] = Arg("--push", "true"), ["Signal__EventSession"] = "logminer_lab_service",
             ["Routing__DestinationTemplate"] = "bench.{server}.{db}.{schema}.{table}", ["Sink__NatsJetStream__Stream"] = "LMBENCH", ["Sink__NatsJetStream__Subjects__0"] = "bench.>",
-            ["HealthLogIntervalSeconds"] = "20",
+            ["HealthLogIntervalSeconds"] = "20", ["Databases__0"] = prefix + "*", ["Databases__1"] = also == "none" ? prefix + "*" : also, ["ReleaseLog"] = release,
         }) start.Environment["LogMiner__" + k] = v;
         var service = Process.Start(start)!;
         var sentFile = Path.Combine(work, "sent.txt");
@@ -57,7 +61,7 @@ internal static class ServiceBench
             if (await Task.WhenAny(capturing.Task, Task.Delay(60_000)) != capturing.Task) { Console.WriteLine("service did not start:\n" + string.Join('\n', output)); return 1; }
             await Task.Delay(TimeSpan.FromSeconds(int.Parse(Arg("--warm-s", "45"), CultureInfo.InvariantCulture))); // the Latest catch-up
             loader = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, [.. Environment.ProcessPath!.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase) ? new[] { typeof(ServiceBench).Assembly.Location } : [],
-                "load", "--dbs", dbs, "--tps", tps, "--seconds", seconds, "--out", sentFile]) { RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false })!;
+                "load", "--prefix", prefix, "--dbs", dbs, "--tps", tps, "--seconds", seconds, "--out", sentFile]) { RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false })!;
             while (await loader.StandardOutput.ReadLineAsync() is { } line && line != "READY") Console.WriteLine(line);
 
             using var stop = new CancellationTokenSource();
@@ -114,7 +118,7 @@ internal static class ServiceBench
             await consuming;
             var l = latencies.Where(x => sent.Contains(x.Key)).Select(x => x.Value).Order().ToArray();
             double P(double q) => l.Length == 0 ? double.NaN : l[Math.Min(l.Length - 1, (int)(q * l.Length))];
-            Console.WriteLine(FormattableString.Invariant($"dispatch {Arg("--dispatch-ms", "4")} ms, push {Arg("--push", "true")}, {tps} tx/s over {dbs} databases: {l.Length} of {sent.Count} events, {duplicates} duplicates"));
+            Console.WriteLine(FormattableString.Invariant($"dispatch {Arg("--dispatch-ms", "4")} ms, push {Arg("--push", "true")}, {tps} tx/s over {dbs} databases ({also} captured, too; release {release}): {l.Length} of {sent.Count} events, {duplicates} duplicates"));
             Console.WriteLine(FormattableString.Invariant($"issue -> consumed ms: p50 {P(0.5):F1} p90 {P(0.9):F1} p99 {P(0.99):F1} p99.9 {P(0.999):F1} max {(l.Length > 0 ? l[^1] : double.NaN):F1}; over 20 ms: {l.Count(x => x > 20)}"));
             Console.WriteLine(FormattableString.Invariant($"logminer.exe: {cpu.TotalSeconds / elapsed * 100:F1}% of one core, {service.WorkingSet64 / 1048576} MB; its SQL sessions: {sql / elapsed / 10:F1}% of one core"));
             return l.Length == sent.Count && duplicates == 0 ? 0 : 1;
