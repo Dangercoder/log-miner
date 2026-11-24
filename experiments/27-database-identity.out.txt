@@ -1,0 +1,84 @@
+Changed database context to 'master'.
+Processed 392 pages for database 'lm_id_a', file 'lm_id_a' on file 1.
+Processed 2 pages for database 'lm_id_a', file 'lm_id_a_log' on file 1.
+BACKUP DATABASE successfully processed 394 pages in 0.029 seconds (106.007 MB/sec).
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+created, backed up|1207|lm_id_a|0A5C9B58|NULL|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:19.963|00000039:00000150:0001
+
+Processed 392 pages for database 'lm_id_a', file 'lm_id_a' on file 1.
+Processed 2 pages for database 'lm_id_a', file 'lm_id_a_log' on file 1.
+RESTORE DATABASE successfully processed 394 pages in 0.018 seconds (170.789 MB/sec).
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+restored over itself|1207|lm_id_a|F8DA2456|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:19.963|00000039:00000248:0001
+
+Processed 392 pages for database 'lm_id_a', file 'lm_id_a' on file 1.
+Processed 2 pages for database 'lm_id_a', file 'lm_id_a_log' on file 1.
+RESTORE DATABASE successfully processed 394 pages in 0.018 seconds (170.789 MB/sec).
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+restored over itself again|1207|lm_id_a|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:19.963|00000039:00000248:0001
+
+Processed 392 pages for database 'lm_id_b', file 'lm_id_a' on file 1.
+Processed 2 pages for database 'lm_id_b', file 'lm_id_a_log' on file 1.
+RESTORE DATABASE successfully processed 394 pages in 0.012 seconds (256.184 MB/sec).
+Processed 392 pages for database 'lm_id_c', file 'lm_id_a' on file 1.
+Processed 2 pages for database 'lm_id_c', file 'lm_id_a_log' on file 1.
+RESTORE DATABASE successfully processed 394 pages in 0.017 seconds (180.836 MB/sec).
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+b and c restored from it|1207|lm_id_a|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:19.963|00000039:00000248:0001
+b and c restored from it|1208|lm_id_b|2263B2E4|0A5C9B58|C806DE18|0A5C9B58|F3947CAE|2026-11-24 19:56:20.647|00000039:00000248:0001
+b and c restored from it|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:20.897|00000039:00000248:0001
+
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+the same insert in each|1207|lm_id_a|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:19.963|00000039:00000250:0001
+the same insert in each|1208|lm_id_b|2263B2E4|0A5C9B58|C806DE18|0A5C9B58|F3947CAE|2026-11-24 19:56:20.647|00000039:00000250:0001
+the same insert in each|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:20.897|00000039:00000250:0001
+
+The database name 'lm_id_old' has been set.
+The database name 'lm_id_a' has been set.
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+a renamed to old, b renamed to a|1208|lm_id_a|2263B2E4|0A5C9B58|C806DE18|0A5C9B58|F3947CAE|2026-11-24 19:56:21.170|00000039:00000260:0001
+a renamed to old, b renamed to a|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:20.897|00000039:00000250:0001
+a renamed to old, b renamed to a|1207|lm_id_old|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:21.167|00000039:00000260:0001
+
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+a dropped and created|1208|lm_id_a|F48876AA|NULL|4BDACD11|F48876AA|D9699773|2026-11-24 19:56:21.190|00000039:000000B0:0001
+a dropped and created|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:20.897|00000039:00000250:0001
+a dropped and created|1207|lm_id_old|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:21.167|00000039:00000260:0001
+
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+snapshot taken, row inserted|1208|lm_id_a|F48876AA|NULL|4BDACD11|F48876AA|D9699773|2026-11-24 19:56:21.190|00000039:00000140:0001
+snapshot taken, row inserted|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:20.897|00000039:00000250:0001
+snapshot taken, row inserted|1207|lm_id_old|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:21.167|00000039:00000260:0001
+snapshot taken, row inserted|1210|lm_id_s|F48876AA|NULL|4BDACD11|F48876AA|D9699773|2026-11-24 19:56:21.367|NULL
+
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+reverted to the snapshot|1208|lm_id_a|D3143074|D3143074|4BDACD11|F48876AA|D9699773|2026-11-24 19:56:21.190|0000043A:00000030:0001
+reverted to the snapshot|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:20.897|00000039:00000250:0001
+reverted to the snapshot|1207|lm_id_old|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:21.167|00000039:00000260:0001
+reverted to the snapshot|1210|lm_id_s|F48876AA|NULL|4BDACD11|F48876AA|D9699773|2026-11-24 19:56:21.367|NULL
+
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+c offline and online|1208|lm_id_a|D3143074|D3143074|4BDACD11|F48876AA|D9699773|2026-11-24 19:56:21.190|0000043A:00000030:0001
+c offline and online|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:20.897|00000039:000002A0:0001
+c offline and online|1207|lm_id_old|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:21.167|00000039:00000260:0001
+
+name|state_desc|user_access_desc
+----|----------|----------------
+lm_id_c|ONLINE|SINGLE_USER
+
+step|id|name|fork|first_fork|db_guid|family|broker|create_date|log_end_lsn
+----|--|----|----|----------|-------|------|------|-----------|-----------
+c detached and attached|1208|lm_id_a|D3143074|D3143074|4BDACD11|F48876AA|D9699773|2026-11-24 19:56:21.190|0000043A:00000030:0001
+c detached and attached|1209|lm_id_c|7F31F52E|0A5C9B58|81C47817|0A5C9B58|F3947CAE|2026-11-24 19:56:21.740|00000039:00000308:0001
+c detached and attached|1207|lm_id_old|B413D309|0A5C9B58|9C12CFCD|0A5C9B58|F3947CAE|2026-11-24 19:56:21.167|00000039:00000260:0001
+

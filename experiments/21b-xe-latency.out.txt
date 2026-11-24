@@ -1,0 +1,18 @@
+# lab xe / lab xerace: commit returned to the client -> event buffer arrived, by how the dispatch is forced
+force=none every=2 ms: 30 arrived, 0 timed out; commit returned -> buffer ms: min 476.37 p50 956.99 p90 960.99 p99 961.54 max 961.54
+0 forcing calls, ms p50 - p99 -
+server CPU per forcing call:  us
+force=address every=1 ms: 100 arrived, 0 timed out; commit returned -> buffer ms: min 0.42 p50 0.81 p90 1.83 p99 2.34 max 2.34
+1929 forcing calls, ms p50 0.20 p99 0.34
+server CPU per forcing call: 48 cpu, 69 elapsed us
+force=address every=4 ms: 100 arrived, 0 timed out; commit returned -> buffer ms: min 0.17 p50 1.81 p90 4.05 p99 4.78 max 4.78
+640 forcing calls, ms p50 0.21 p99 0.42
+server CPU per forcing call: 52 cpu, 74 elapsed us
+force=address every=9 ms: 100 arrived, 0 timed out; commit returned -> buffer ms: min 1.72 p50 7.92 p90 8.90 p99 9.57 max 9.57
+352 forcing calls, ms p50 0.23 p99 0.46
+server CPU per forcing call: 55 cpu, 78 elapsed us
+force=counter every=2 ms: 20 arrived, 0 timed out; commit returned -> buffer ms: min 16.65 p50 21.56 p90 23.10 p99 24.29 max 24.29
+80 forcing calls, ms p50 22.11 p99 24.46
+server CPU per forcing call: 21908 cpu, 21998 elapsed us
+3000 pushed blocks read at once (0 concurrent writers): 0 not visible in the first read; bell before the commit returned to the client: 47; first read p50 0.20 p99 0.27 ms
+3000 pushed blocks read at once (8 concurrent writers): 0 not visible in the first read; bell before the commit returned to the client: 8; first read p50 0.22 p99 0.34 ms

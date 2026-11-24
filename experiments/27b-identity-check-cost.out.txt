@@ -1,0 +1,19 @@
+Changed database context to 'master'.
+what|us|cpu_us
+----|--|------
+DB_NAME|1.578550000000|1.450000000000
+
+ | | 
+-|-|-
+database_recovery_status|3.140600000000|3.150000000000
+
+ | | 
+-|-|-
+sys.databases|19.164650000000|19.150000000000
+
+ | | 
+-|-|-
+dm_db_log_stats (already part of every read)|2.000200000000|2.000000000000
+
+Msg 9005, Level 16, State 6, Server sqlhost, Line 18
+Invalid parameter passed to OpenRowset(DBLog, ...).

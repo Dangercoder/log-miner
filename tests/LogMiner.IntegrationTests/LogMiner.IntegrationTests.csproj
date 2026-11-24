@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- test method names are sentences -->
+    <NoWarn>$(NoWarn);CA1515;CA1822;CA1859;CA1861;CA2201;CA1305;CA2007;CA1031</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Hegel" />
+    <PackageReference Include="Hegel.Xunit" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LogMiner.Core\LogMiner.Core.csproj" />
+    <ProjectReference Include="..\..\src\LogMiner.SqlServer\LogMiner.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\LogMiner.Nats\LogMiner.Nats.csproj" />
+    <ProjectReference Include="..\..\src\LogMiner.Service\LogMiner.Service.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\*.cs" LinkBase="Shared" />
+  </ItemGroup>
+</Project>

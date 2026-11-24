@@ -1,0 +1,45 @@
+﻿-- The log was not truncated because records at the beginning of the log are pending replication or Change Data Capture. Ensure the Log Reader Agent or capture job is running or use sp_repldone to mark transactions as distributed or captured.
+== step | log_reuse_wait_desc
+after log backup | REPLICATION
+== log_end_lsn | log_truncation_holdup_reason | log_backup_lsn | log_min_lsn | recovery_vlf_count | total_vlf_count
+0000002A:000006C8:0001 | REPLICATION | 0000002A:000006B0:0001 | 00000028:00000B38:0001 | 1 | 4
+== lab_a | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (40:2872:1)
+-- DBCC execution completed. If DBCC printed error messages, contact your system administrator.
+== step | log_end_lsn
+post-commit | 0000002A:000006D0:0001
+== Current LSN | Operation | Transaction Name | End Time
+0000002A:000006C8:0003 | LOP_COMMIT_XACT | NULL | 2026/11/23 19:07:09:180
+0000002A:000006C8:0002 | LOP_INSERT_ROWS | NULL | NULL
+0000002A:000006C8:0001 | LOP_BEGIN_XACT | f01_marker | NULL
+== hex_lsn | dec_lsn
+0000002A:000006C8:0001 | 42:1736:1
+== fmt | rows_from_start
+dec | 3
+== fmt | rows_from_start
+hex0x | 3
+== fmt | rows_total
+all | 17475
+== xdesid | xact_seqno
+0x0000002800000B380001 | 0x00000029000003E00001
+0x00000029000003F00001 | 0x0000002900000C580024
+0x0000002900000C680001 | 0x0000002A00000518001A
+0x0000002A000005480001 | 0x0000002A00000548001C
+0x0000002A000005500001 | 0x0000002A00000550001D
+0x0000002A000005580001 | 0x0000002A00000558001C
+0x0000002A000005780001 | 0x0000002A000005780003
+0x0000002A000005880001 | 0x0000002A000005880003
+0x0000002A000005980001 | 0x0000002A000005980003
+0x0000002A000005A00001 | 0x0000002A000005A00003
+0x0000002A000005A80001 | 0x0000002A000005A80005
+0x0000002A000005B00001 | 0x0000002A000005B00003
+0x0000002A000005D00001 | 0x0000002A000005D00003
+0x0000002A000006C80001 | 0x0000002A000006C80003
+== begin_lsn | xactid | commit_lsn | xact_seqno
+0000002A:000006C8:0001 | 0x0000002A000006C80001 | 0000002A:000006C8:0003 | 0x0000002A000006C80003
+== xdesid | xact_seqno
+-- No active open transactions.
+-- DBCC execution completed. If DBCC printed error messages, contact your system administrator.
+== step | log_reuse_wait_desc
+after repldone + log backup | NOTHING

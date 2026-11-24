@@ -1,0 +1,102 @@
+Changed database context to 'master'.
+Changed database context to 'lm_sw'.
+Partition scheme 'ps' has been created successfully. 'PRIMARY' is marked as the next used filegroup in partition scheme 'ps'.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+Warning: The @allow_partition_switch parameter is set to 1. Change data capture will not track changes introduced in the table resulting from a partition switch which will cause data inconsistency when changes are consumed. Refer to books online for more information about partition switching behavior when using Change Data Capture.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+source_object_id|t|partition_switch
+----------------|-|----------------
+1253579504|t|1
+1317579732|p|1
+1445580188|r|1
+
+step|t|pn|partition_id|rows
+----|-|--|------------|----
+before|p|1|72057594046513152|1
+before|p|2|72057594046578688|1
+before|p|3|72057594046644224|0
+before|p1|1|72057594046709760|0
+before|p2|1|72057594046775296|1
+before|r|1|72057594046840832|1
+before|staging|1|72057594046447616|0
+before|t|1|72057594046382080|1
+
+Msg 4711, Level 16, State 1, Server sqlhost, Line 1
+Cannot truncate table 'dbo.p' because it is published for replication or enabled for Change Data Capture.
+step|t|pn|partition_id|rows
+----|-|--|------------|----
+after|p|1|72057594046709760|0
+after|p|2|72057594046775296|1
+after|p|3|72057594046644224|0
+after|p1|1|72057594046513152|1
+after|p2|1|72057594046578688|0
+after|r|1|72057594046840832|1
+after|staging|1|72057594046382080|1
+after|t|1|72057594046447616|0
+
+== replication markers per transaction
+name|op|f|n
+----|--|-|-
+add_def|LOP_COMMIT_XACT|6|1
+add_def|LOP_REPL_COMMAND|6|3
+add_null|LOP_COMMIT_XACT|6|1
+add_null|LOP_REPL_COMMAND|6|3
+alt_dec|LOP_COMMIT_XACT|6|1
+alt_dec|LOP_REPL_COMMAND|6|4
+sw_in_p|LOP_COMMIT_XACT|6|1
+sw_in_p|LOP_REPL_COMMAND|6|3
+sw_out_p|LOP_COMMIT_XACT|6|1
+sw_out_p|LOP_REPL_COMMAND|6|3
+sw_out_t|LOP_COMMIT_XACT|6|1
+sw_out_t|LOP_REPL_COMMAND|6|3
+
+== catalog changes of the switches (sysrowsets, sysrscols, sysallocunits)
+name|op|ctx|au|ofs|len0|l0|l1
+----|--|---|--|---|----|--|--
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsets.clust|13|13|0xF01AB84A01000000010000005E|0x6263A04C010000000100000046
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x85|0x80
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x05|0x00
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsets.clust|13|13|0x6263A04C010000000100000046|0xF01AB84A01000000010000005E
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x80|0x85
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x00|0x05
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysschobjs.clst|36|1|0x0C|0x78
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysidxstats.clst|33|1|0x81|0x82
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysschobjs.clst|36|2|0xA8A4|0x78A5
+sw_out_t|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysidxstats.clst|33|1|0x82|0x81
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsets.clust|13|13|0xD4AB884E01000000010000005E|0x46F47050010000000100000046
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x85|0x80
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x05|0x00
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsets.clust|13|13|0x46F47050010000000100000046|0xD4AB884E01000000010000005E
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x80|0x85
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x00|0x05
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysschobjs.clst|36|1|0x39|0x93
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsetrefs.clust|19|1|0x83|0x86
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysschobjs.clst|36|2|0xA9A4|0x93A5
+sw_out_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysidxstats.clst|33|1|0x86|0x83
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsets.clust|13|13|0xF1604D53010000000100000046|0xD4AB884E01000000020000005E
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x80|0x85
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x00|0x05
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsets.clust|13|13|0xD4AB884E01000000020000005E|0xF1604D53010000000100000046
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x85|0x80
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrscols.clst|40|1|0x05|0x00
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysschobjs.clst|36|2|0xA9A4|0x96A5
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysidxstats.clst|33|1|0x87|0x84
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysschobjs.clst|36|1|0x93|0x96
+sw_in_p|LOP_MODIFY_ROW|LCX_CLUSTERED|sys.sysrowsetrefs.clust|19|1|0x84|0x87
+
+== row changes of DDL that rewrites (not replicated)
+name|op|ctx|f|au|n
+----|--|---|-|--|-
+add_def|LOP_INSERT_ROWS|LCX_CLUSTERED|1026|dbo.systranschemas.uncsystranschemas|2
+add_null|LOP_INSERT_ROWS|LCX_CLUSTERED|1026|dbo.systranschemas.uncsystranschemas|2
+alt_dec|LOP_INSERT_ROWS|LCX_CLUSTERED|1026|dbo.systranschemas.uncsystranschemas|3
+alt_dec|LOP_MODIFY_ROW|LCX_CLUSTERED|1026|dbo.r.PK__r__3213E83F16BB2A95|1
+
+Changed database context to 'master'.

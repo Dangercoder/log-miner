@@ -1,0 +1,13 @@
+== in_buffer | total | dropped
+999 | 1270870 | 0
+== event | n | first_ts | last_ts
+tx_commit_abort_stats | 667 | 2026-11-24T14:51:15.354Z | 2026-11-24T14:51:15.360Z
+recovery_checkpoint_stats | 100 | 2026-11-24T14:50:49.593Z | 2026-11-24T14:53:57.887Z
+auto_stats | 100 | 2026-11-24T14:50:32.096Z | 2026-11-24T14:54:20.907Z
+cardinality_estimation_version_usage | 100 | 2026-11-24T14:45:31.144Z | 2026-11-24T14:51:05.057Z
+error_reported | 18 | 2026-11-24T14:21:09.076Z | 2026-11-24T14:54:16.103Z
+login_protocol_count | 7 | 2026-11-24T14:10:24.734Z | 2026-11-24T14:50:05.929Z
+table_variable_deferred_compilation | 5 | 2026-11-24T14:40:47.088Z | 2026-11-24T14:53:57.889Z
+query_store_db_diagnostics | 2 | 2026-11-24T14:11:20.571Z | 2026-11-24T14:41:20.976Z
+== sample
+SQL error 6354 (line 7): Target string size is too small to represent the XML instance

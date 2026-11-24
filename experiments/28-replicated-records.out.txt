@@ -1,0 +1,248 @@
+Changed database context to 'master'.
+Changed database context to 'lm_rr'.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+Msg 7137, Level 16, State 1, Server sqlhost, Line 2
+UPDATETEXT is not allowed because the column is being processed by a concurrent snapshot or is being replicated to a non-SQL Server Subscriber or Published in a publication allowing Data Transformation Services (DTS) or tracked by Change Data Capture.
+Msg 7138, Level 16, State 1, Server sqlhost, Line 1
+The WRITETEXT statement is not allowed because the column is being replicated with Data Transformation Services (DTS) or tracked by Change Data Capture.
+== (a) per transaction: the count at the commit, and the replicated records in the log (rows + REPL_COMMAND; all flagged; those without the commit itself)
+name|commit_rr|commit_flags|flagged|flagged_rows|clrs|clrs_without_prev
+----|---------|------------|-------|------------|----|-----------------
+p_ins|2|6|2|2|0|0
+p_lob|24|6|24|2|0|0
+p_write|15|6|15|1|0|0
+p_append|16|6|16|1|0|0
+p_key|6|6|6|4|0|0
+p_noop|1|6|1|1|0|0
+p_savept|3|6|3|3|3|0
+p_undone|1|6|1|1|2|0
+p_dupkey|2|6|2|2|4|0
+p_ix|7|6|7|5|0|0
+p_heap|8|6|8|8|0|0
+p_nuc|5|6|5|5|0|0
+p_merge|2|6|2|2|0|0
+p_text|5|6|5|1|0|0
+p_casc|3|6|3|3|0|0
+p_mixed|1|6|1|1|0|0
+p_plain|0|2|0|0|0|0
+p_ddl|5|6|5|2|0|0
+p_abort|NULL|NULL|1|1|1|0
+p_bulkheap|30000|6|30000|30000|0|0
+p_bulkclus|30000|6|30000|30000|0|0
+p_bulkdel|60000|6|60000|60000|0|0
+r_ins|2|6|2|2|0|0
+r_lob|24|6|24|2|0|0
+r_write|15|6|15|1|0|0
+r_append|16|6|16|1|0|0
+r_key|6|6|6|4|0|0
+r_noop|1|6|1|1|0|0
+r_savept|3|6|3|3|3|0
+r_undone|1|6|1|1|2|0
+r_dupkey|2|6|2|2|4|0
+r_ix|7|6|7|5|0|0
+r_heap|8|6|8|8|0|0
+r_nuc|5|6|5|5|0|0
+r_merge|2|6|2|2|0|0
+r_text|5|6|5|1|0|0
+r_casc|3|6|3|3|0|0
+r_mixed|1|6|1|1|0|0
+r_plain|0|2|0|0|0|0
+r_ddl|5|6|5|2|0|0
+r_abort|NULL|NULL|1|1|1|0
+r_bulkheap|30000|6|30000|30000|0|0
+r_bulkclus|30000|6|30000|30000|0|0
+r_bulkdel|60000|6|60000|60000|0|0
+a_ins|2|134|2|2|0|0
+a_lob|24|134|24|2|0|0
+a_write|15|134|15|1|0|0
+a_append|16|134|16|1|0|0
+a_key|6|134|6|4|0|0
+a_noop|1|134|1|1|0|0
+a_savept|3|134|3|3|2|0
+a_undone|1|134|1|1|2|0
+a_dupkey|2|134|2|2|1|0
+a_ix|7|134|7|5|0|0
+a_heap|8|134|8|8|0|0
+a_nuc|5|134|5|5|0|0
+a_merge|2|134|2|2|0|0
+a_text|5|134|5|1|0|0
+a_casc|3|134|3|3|0|0
+a_mixed|1|134|1|1|0|0
+a_plain|0|130|0|0|0|0
+a_ddl|5|134|5|2|0|0
+a_abort|NULL|NULL|1|1|1|0
+a_bulkheap|30000|134|30000|30000|0|0
+a_bulkclus|30000|134|30000|30000|0|0
+a_bulkdel|60000|134|60000|60000|0|0
+k_ins|2|134|2|2|0|0
+k_lob|24|134|24|2|0|0
+k_write|15|134|15|1|0|0
+k_append|16|134|16|1|0|0
+k_key|6|134|6|4|0|0
+k_noop|1|134|1|1|0|0
+k_savept|3|134|3|3|2|0
+k_undone|1|134|1|1|2|0
+k_dupkey|2|134|2|2|1|0
+k_ix|7|134|7|5|0|0
+k_heap|8|134|8|8|0|0
+k_nuc|5|134|5|5|0|0
+k_merge|2|134|2|2|0|0
+k_text|5|134|5|1|0|0
+k_casc|3|134|3|3|0|0
+k_mixed|1|134|1|1|0|0
+k_plain|0|130|0|0|0|0
+k_ddl|5|134|5|2|0|0
+k_abort|NULL|NULL|1|1|1|0
+k_bulkheap|30000|134|30000|30000|0|0
+k_bulkclus|30000|134|30000|30000|0|0
+k_bulkdel|60000|134|60000|60000|0|0
+
+Warning: Null value is eliminated by an aggregate or other SET operation.
+== (b) kinds of replicated records
+mode|op|ctx|f|n|min_l0|max_l0|e_g
+----|--|---|-|-|------|------|---
+a|LOP_BEGIN_UPDATE|LCX_NULL|134|2|NULL|NULL|a_ix
+k|LOP_BEGIN_UPDATE|LCX_NULL|134|2|NULL|NULL|k_ix
+p|LOP_BEGIN_UPDATE|LCX_NULL|6|2|NULL|NULL|p_ix
+r|LOP_BEGIN_UPDATE|LCX_NULL|6|2|NULL|NULL|r_ix
+a|LOP_COMMIT_XACT|LCX_NULL|134|20|NULL|NULL|a_append
+k|LOP_COMMIT_XACT|LCX_NULL|134|20|NULL|NULL|k_append
+p|LOP_COMMIT_XACT|LCX_NULL|6|20|NULL|NULL|p_append
+r|LOP_COMMIT_XACT|LCX_NULL|6|20|NULL|NULL|r_append
+u|LOP_COMMIT_XACT|LCX_NULL|6|8|NULL|NULL|user_transaction
+p|LOP_DELETE_ROWS|LCX_CLUSTERED|1030|23834|61|61|p_bulkdel
+a|LOP_DELETE_ROWS|LCX_HEAP|1158|30002|30|75|a_bulkdel
+k|LOP_DELETE_ROWS|LCX_HEAP|1158|30002|30|75|k_bulkdel
+p|LOP_DELETE_ROWS|LCX_HEAP|1030|30002|16|61|p_bulkdel
+r|LOP_DELETE_ROWS|LCX_HEAP|1030|30002|30|75|r_bulkdel
+a|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1158|30007|29|75|a_bulkdel
+k|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1158|30007|29|75|k_bulkdel
+p|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1030|6173|15|61|p_bulkdel
+r|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1030|30007|29|75|r_bulkdel
+a|LOP_END_UPDATE|LCX_NULL|134|2|NULL|NULL|a_ix
+k|LOP_END_UPDATE|LCX_NULL|134|2|NULL|NULL|k_ix
+p|LOP_END_UPDATE|LCX_NULL|6|2|NULL|NULL|p_ix
+r|LOP_END_UPDATE|LCX_NULL|6|2|NULL|NULL|r_ix
+a|LOP_INSERT_ROWS|LCX_CLUSTERED|1158|30021|29|112|a_abort
+k|LOP_INSERT_ROWS|LCX_CLUSTERED|1158|30021|29|116|k_abort
+p|LOP_INSERT_ROWS|LCX_CLUSTERED|1030|30021|15|90|p_abort
+r|LOP_INSERT_ROWS|LCX_CLUSTERED|1030|30021|29|108|r_abort
+a|LOP_INSERT_ROWS|LCX_HEAP|1158|30003|30|4029|a_bulkheap
+k|LOP_INSERT_ROWS|LCX_HEAP|1158|30003|30|4029|k_bulkheap
+p|LOP_INSERT_ROWS|LCX_HEAP|1030|30003|16|4015|p_bulkheap
+r|LOP_INSERT_ROWS|LCX_HEAP|1030|30003|30|4029|r_bulkheap
+a|LOP_MODIFY_ROW|LCX_CLUSTERED|1158|9|33|112|a_append
+k|LOP_MODIFY_ROW|LCX_CLUSTERED|1158|9|33|116|k_append
+p|LOP_MODIFY_ROW|LCX_CLUSTERED|1030|9|16|90|p_append
+r|LOP_MODIFY_ROW|LCX_CLUSTERED|1030|9|33|108|r_append
+a|LOP_MODIFY_ROW|LCX_HEAP|1158|3|42|7041|a_heap
+k|LOP_MODIFY_ROW|LCX_HEAP|1158|3|42|7041|k_heap
+p|LOP_MODIFY_ROW|LCX_HEAP|1030|3|28|7027|p_heap
+r|LOP_MODIFY_ROW|LCX_HEAP|1030|3|42|7041|r_heap
+a|LOP_MODIFY_ROW|LCX_TEXT_MIX|1158|24|0|8000|a_append
+k|LOP_MODIFY_ROW|LCX_TEXT_MIX|1158|24|0|8000|k_append
+p|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|24|0|8000|p_append
+r|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|24|0|8000|r_append
+u|LOP_PREP_XACT|LCX_NULL|6|1|NULL|NULL|user_transaction
+a|LOP_REPL_COMMAND|LCX_NULL|134|3|NULL|NULL|a_ddl
+k|LOP_REPL_COMMAND|LCX_NULL|134|3|NULL|NULL|k_ddl
+p|LOP_REPL_COMMAND|LCX_NULL|6|3|NULL|NULL|p_ddl
+r|LOP_REPL_COMMAND|LCX_NULL|6|3|NULL|NULL|r_ddl
+u|LOP_REPL_COMMAND|LCX_NULL|6|8|NULL|NULL|user_transaction
+a|LOP_TEXT_INFO_BEGIN|LCX_NULL|134|8|NULL|NULL|a_append
+k|LOP_TEXT_INFO_BEGIN|LCX_NULL|134|8|NULL|NULL|k_append
+p|LOP_TEXT_INFO_BEGIN|LCX_NULL|6|8|NULL|NULL|p_append
+r|LOP_TEXT_INFO_BEGIN|LCX_NULL|6|8|NULL|NULL|r_append
+a|LOP_TEXT_INFO_END|LCX_NULL|134|8|NULL|NULL|a_append
+k|LOP_TEXT_INFO_END|LCX_NULL|134|8|NULL|NULL|k_append
+p|LOP_TEXT_INFO_END|LCX_NULL|6|8|NULL|NULL|p_append
+r|LOP_TEXT_INFO_END|LCX_NULL|6|8|NULL|NULL|r_append
+a|LOP_TEXT_VALUE|LCX_NULL|134|15|NULL|NULL|a_append
+k|LOP_TEXT_VALUE|LCX_NULL|134|15|NULL|NULL|k_append
+p|LOP_TEXT_VALUE|LCX_NULL|6|15|NULL|NULL|p_append
+r|LOP_TEXT_VALUE|LCX_NULL|6|15|NULL|NULL|r_append
+
+Warning: Null value is eliminated by an aggregate or other SET operation.
+== (c) transactions on captured tables whose commit is not flagged, or that logged row changes of captured tables without the flag
+name|op|ctx|f|au|n
+----|--|---|-|--|-
+a_ddl|LOP_INSERT_ROWS|LCX_CLUSTERED|1154|dbo.systranschemas.uncsystranschemas|2
+a_heap|LOP_DELETE_ROWS|LCX_HEAP|1154|dbo.h|1
+a_heap|LOP_MODIFY_ROW|LCX_HEAP|1154|dbo.h|2
+a_heap|LOP_INSERT_ROWS|LCX_HEAP|1154|dbo.h|1
+a_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1154|dbo.ix.ib|3
+a_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1154|dbo.ix.ux|3
+a_nuc|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1154|dbo.n.pk_n|1
+k_ddl|LOP_INSERT_ROWS|LCX_CLUSTERED|1154|dbo.systranschemas.uncsystranschemas|2
+k_heap|LOP_INSERT_ROWS|LCX_HEAP|1154|dbo.h|1
+k_heap|LOP_DELETE_ROWS|LCX_HEAP|1154|dbo.h|1
+k_heap|LOP_MODIFY_ROW|LCX_HEAP|1154|dbo.h|2
+k_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1154|dbo.ix.ux|3
+k_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1154|dbo.ix.ib|3
+k_nuc|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1154|dbo.n.pk_n|1
+p_ddl|LOP_INSERT_ROWS|LCX_CLUSTERED|1026|dbo.systranschemas.uncsystranschemas|2
+p_heap|LOP_INSERT_ROWS|LCX_HEAP|1026|dbo.h|1
+p_heap|LOP_MODIFY_ROW|LCX_HEAP|1026|dbo.h|2
+p_heap|LOP_DELETE_ROWS|LCX_HEAP|1026|dbo.h|1
+p_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1026|dbo.ix.ux|3
+p_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1026|dbo.ix.ib|3
+p_nuc|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1026|dbo.n.pk_n|1
+r_ddl|LOP_INSERT_ROWS|LCX_CLUSTERED|1026|dbo.systranschemas.uncsystranschemas|2
+r_heap|LOP_INSERT_ROWS|LCX_HEAP|1026|dbo.h|1
+r_heap|LOP_MODIFY_ROW|LCX_HEAP|1026|dbo.h|2
+r_heap|LOP_DELETE_ROWS|LCX_HEAP|1026|dbo.h|1
+r_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1026|dbo.ix.ib|3
+r_ix|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1026|dbo.ix.ux|3
+r_nuc|LOP_DELETE_ROWS|LCX_MARK_AS_GHOST|1026|dbo.n.pk_n|1
+
+== (d) text updates in detail
+name|op|ctx|f|l0|l1|au
+----|--|---|-|--|--|--
+p_write|LOP_BEGIN_XACT|LCX_NULL|2|NULL|NULL|NULL
+p_write|LOP_TEXT_INFO_BEGIN|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_TEXT_INFO_END|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_TEXT_INFO_BEGIN|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_write|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_write|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_write|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_write|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|7842|7842|dbo.c.PK__c__3213E83F4633ABE9
+p_write|LOP_TEXT_INFO_END|LCX_NULL|6|NULL|NULL|NULL
+p_write|LOP_MODIFY_ROW|LCX_CLUSTERED|1030|90|90|dbo.c.PK__c__3213E83F4633ABE9
+p_write|LOP_COMMIT_XACT|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_BEGIN_XACT|LCX_NULL|2|NULL|NULL|NULL
+p_append|LOP_TEXT_INFO_BEGIN|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_TEXT_VALUE|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_TEXT_INFO_END|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_TEXT_INFO_BEGIN|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_append|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_append|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_append|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|8000|8000|dbo.c.PK__c__3213E83F4633ABE9
+p_append|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|7842|7842|dbo.c.PK__c__3213E83F4633ABE9
+p_append|LOP_MODIFY_ROW|LCX_TEXT_MIX|1030|0|4|dbo.c.PK__c__3213E83F4633ABE9
+p_append|LOP_TEXT_INFO_END|LCX_NULL|6|NULL|NULL|NULL
+p_append|LOP_MODIFY_ROW|LCX_CLUSTERED|1030|90|90|dbo.c.PK__c__3213E83F4633ABE9
+p_append|LOP_COMMIT_XACT|LCX_NULL|6|NULL|NULL|NULL
+
+Changed database context to 'master'.

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LogMiner.Nats</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NATS.Net" />
+    <ProjectReference Include="..\LogMiner.Core\LogMiner.Core.csproj" />
+  </ItemGroup>
+</Project>

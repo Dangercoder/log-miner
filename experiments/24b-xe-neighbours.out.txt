@@ -1,0 +1,6 @@
+total_bytes_generated moved by the first read after the commit in 0 of 4; later in 4 (max 3000.09 ms); read p50 0.233 ms
+20,000 reads of total_bytes_generated in a loop: 2.7 us each
+not forcing: 1997 events/s; 2 dispatches, 1 ms in the target; 1441541 bytes of events, dropped 0; files 1812480 bytes; SQL Server CPU 13.8% of one core
+forcing every 3 ms (515 calls): 1993 events/s; 515 dispatches, 1 ms in the target; 1806418 bytes of events, dropped 0; files 1973760 bytes; SQL Server CPU 13.3% of one core
+not forcing: 1996 events/s; 2 dispatches, 2 ms in the target; 1441541 bytes of events, dropped 0; files 1812992 bytes; SQL Server CPU 11.0% of one core
+forcing every 3 ms (518 calls): 1993 events/s; 518 dispatches, 3 ms in the target; 1807096 bytes of events, dropped 0; files 1984000 bytes; SQL Server CPU 11.8% of one core

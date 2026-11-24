@@ -1,0 +1,13 @@
+-- Changed database context to 'lab_split'.
+-- Processed 376 pages for database 'lab_split', file 'lab_split' on file 1.
+-- Processed 2 pages for database 'lab_split', file 'lab_split_log' on file 1.
+-- BACKUP DATABASE successfully processed 378 pages in 0.018 seconds (163.845 MB/sec).
+== AllocUnitName | Operation | Context | Transaction Name | Xact Type | n | maxlen | of_t | min_el | max_el
+sys.syscolpars.clst | LOP_INSERT_ROWS | LCX_CLUSTERED | ALTER TABLE | 1 | 240 | 193 | 240 | 3 | 3
+sys.syscolpars.clst | LOP_INSERT_ROWS | LCX_INDEX_INTERIOR | SplitPage | 3 | 5 | 17 | 0 | 3 | 3
+sys.syscolpars.clst | LOP_MODIFY_ROW | LCX_PFS | SplitPage | 3 | 6 | 8 | 0 | 3 | 3
+sys.sysrscols.clst | LOP_INSERT_ROWS | LCX_CLUSTERED | ALTER TABLE | 1 | 240 | 62 | 240 | 3 | 3
+sys.sysrscols.clst | LOP_INSERT_ROWS | LCX_INDEX_INTERIOR | SplitPage | 3 | 1 | 19 | 0 | 3 | 3
+sys.sysrscols.clst | LOP_MODIFY_ROW | LCX_PFS | SplitPage | 3 | 1 | 1 | 0 | 3 | 3
+== AllocUnitName | Num Elements | rl0 | rl1
+-- Changed database context to 'master'.

@@ -1,0 +1,84 @@
+== v
+CREATE VIEW sys.dm_xe_session_targets AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSION_TARGETS, 0)
+
+== v
+CREATE VIEW sys.dm_xe_sessions AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSIONS, 0)
+
+== v
+CREATE VIEW sys.dm_xe_session_events AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSION_EVENTS,0)
+
+== v
+CREATE VIEW sys.dm_xe_session_object_columns AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSION_OBJECT_COLUMNS,0)
+
+== name | v
+dm_xe_map_values | CREATE VIEW sys.dm_xe_map_values AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_MAP_VALUES)
+
+dm_xe_object_columns | CREATE VIEW sys.dm_xe_object_columns AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_OBJECT_COLUMNS)
+
+dm_xe_objects | CREATE VIEW sys.dm_xe_objects AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_OBJECTS)
+
+dm_xe_packages | CREATE VIEW sys.dm_xe_packages AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_PACKAGES)
+
+dm_xe_session_event_actions | CREATE VIEW sys.dm_xe_session_event_actions AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSION_EVENT_ACTIONS, 0)
+
+dm_xe_session_events | CREATE VIEW sys.dm_xe_session_events AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSION_EVENTS,0)
+
+dm_xe_session_object_columns | CREATE VIEW sys.dm_xe_session_object_columns AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSION_OBJECT_COLUMNS,0)
+
+dm_xe_session_targets | CREATE VIEW sys.dm_xe_session_targets AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSION_TARGETS, 0)
+
+dm_xe_sessions | CREATE VIEW sys.dm_xe_sessions AS
+	SELECT *
+	FROM OpenRowset(TABLE DM_XE_SESSIONS, 0)
+
+== name
+fn_MSxe_read_event_stream
+fn_xe_file_target_read_file
+trace_xe_action_map
+trace_xe_event_map
+== name | target_name | len | execution_count | execution_duration_ms
+hkenginexesession | event_file | 207 | 0 | 0
+system_health | ring_buffer | 4193182 | 385 | 0
+system_health | event_file | 205 | 385 | 1500
+sp_server_diagnostics session | router | NULL | 63911 | 0
+telemetry_xevents | ring_buffer | 2643555 | 10 | 0
+logminer_lab_bell | event_counter | 659 | 0 | 0
+== what | us
+count all | 27884
+== what | us
+top 1 | 30
+== what | us
+by address | 945
+== what | us
+top 1 by address | 1277
+== what | us
+session_events | 100
+== what | us
+object_columns | 20
+== what | us
+sessions | 0
+-- batch took 1516 ms

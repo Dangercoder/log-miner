@@ -1,0 +1,8 @@
+== paced 200 tx/s
+nothing  median of 7: 196 tx/s, commit p50 0.330 p99 0.597 ms, SQL Server CPU 8.5% of one core = 432.0 us/tx   (tx/s 196..196, us/tx 397.5..489.4)
+push     median of 7: 196 tx/s, commit p50 0.340 p99 0.584 ms, SQL Server CPU 11.3% of one core = 576.8 us/tx   (tx/s 196..196, us/tx 566.8..593.0)
+poll     median of 7: 196 tx/s, commit p50 0.340 p99 0.598 ms, SQL Server CPU 14.5% of one core = 737.8 us/tx   (tx/s 196..196, us/tx 733.8..750.0)
+== paced 2000 tx/s
+nothing  median of 7: 1997 tx/s, commit p50 0.310 p99 0.537 ms, SQL Server CPU 35.3% of one core = 176.7 us/tx   (tx/s 1993..1997, us/tx 173.1..211.9)
+push     median of 7: 1996 tx/s, commit p50 0.310 p99 0.525 ms, SQL Server CPU 38.2% of one core = 191.2 us/tx   (tx/s 1996..1997, us/tx 188.9..192.9)
+poll     median of 7: 1996 tx/s, commit p50 0.310 p99 0.526 ms, SQL Server CPU 41.1% of one core = 205.6 us/tx   (tx/s 1996..1997, us/tx 204.5..209.3)

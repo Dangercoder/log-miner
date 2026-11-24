@@ -1,0 +1,15 @@
+﻿-- Changed database context to 'lab_a'.
+== xname | Operation | Context | Flag Bits | Tag Bits | Replicated Records | Xact ID | Begin Time | End Time | PartitionId | AllocUnitId | RowFlags | Lock Information
+== tbl | partition_id | hobt_id | partition_column_id | name | type | max_inrow_length | precision | scale | collation_name | leaf_offset | leaf_null_bit | leaf_bit_position | is_nullable | is_dropped | is_uniqueifier | is_sparse | is_anti_matter | key_ordinal | has_default | default_value
+t_cdc | 72057594045792256 | 72057594045792256 | 1 | id | int | 4 | 10 | 0 | NULL | 4 | 1 | 0 | False | False | False | False | False | 1 | False | NULL
+t_cdc | 72057594045792256 | 72057594045792256 | 2 | a | int | 4 | 10 | 0 | NULL | 8 | 2 | 0 | False | False | False | False | False | 0 | False | NULL
+t_cdc | 72057594045792256 | 72057594045792256 | 3 | b | varchar | 50 | 0 | 0 | SQL_Latin1_General_CP1_CI_AS | -1 | 3 | 0 | True | False | False | False | False | 0 | False | NULL
+t_cdc | 72057594045792256 | 72057594045792256 | 4 | c | nvarchar | 200 | 0 | 0 | SQL_Latin1_General_CP1_CI_AS | -2 | 4 | 0 | True | False | False | False | False | 0 | False | NULL
+t_cdc | 72057594045792256 | 72057594045792256 | 5 | d | datetime2 | 7 | 23 | 3 | NULL | 12 | 5 | 0 | True | False | False | False | False | 0 | False | NULL
+t_cdc | 72057594045792256 | 72057594045792256 | 6 | e | decimal | 9 | 18 | 4 | NULL | 19 | 6 | 0 | True | False | False | False | False | 0 | False | NULL
+t_cdc | 72057594045792256 | 72057594045792256 | 7 | f | varbinary | 100 | 0 | 0 | NULL | -3 | 7 | 0 | True | False | False | False | False | 0 | False | NULL
+t_heap_cdc | 72057594045857792 | 72057594045857792 | 1 | id | int | 4 | 10 | 0 | NULL | 4 | 1 | 0 | False | False | False | False | False | 0 | False | NULL
+t_heap_cdc | 72057594045857792 | 72057594045857792 | 2 | a | int | 4 | 10 | 0 | NULL | 8 | 2 | 0 | True | False | False | False | False | 0 | False | NULL
+t_heap_cdc | 72057594045857792 | 72057594045857792 | 3 | b | varchar | 50 | 0 | 0 | SQL_Latin1_General_CP1_CI_AS | -1 | 3 | 0 | True | False | False | False | False | 0 | False | NULL
+== name | is_read_committed_snapshot_on | snapshot_isolation_state_desc | delayed_durability_desc | is_accelerated_database_recovery_on
+lab_a | False | OFF | DISABLED | False

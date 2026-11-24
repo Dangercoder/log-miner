@@ -1,0 +1,61 @@
+== windows_only
+0
+== step
+--- after: 
+== r
+create: 15247 User does not have permission to perform this action.
+== r
+start: 15151 Cannot alter the event session 'logminer_lab_perm', because it does not exist or you do not have permission.
+== r
+== r
+targets: 297 The user does not have permission to perform this action.
+== r
+file stats: 300 VIEW SERVER PERFORMANCE STATE permission was denied on object 'server', database 'master'.
+== r
+== r
+stream: 15151 Cannot view the function 'fn_MSXe_read_event_stream', because it does not exist or you do not have permission.
+== r
+drop: 15151 Cannot drop the event session 'logminer_lab_perm', because it does not exist or you do not have permission.
+== step
+--- after: GRANT VIEW SERVER STATE TO logminer_lab_low;
+== r
+create: 15247 User does not have permission to perform this action.
+== r
+start: 15151 Cannot alter the event session 'logminer_lab_perm', because it does not exist or you do not have permission.
+== r
+targets: ok 0
+== r
+file stats: ok 1208
+== r
+== r
+stream: 25728 The Extended Events session named "logminer_lab_perm" could not be found. Make sure the session exists and is started.
+== r
+drop: 15151 Cannot drop the event session 'logminer_lab_perm', because it does not exist or you do not have permission.
+== step
+--- after: GRANT ALTER ANY EVENT SESSION TO logminer_lab_low;
+== r
+create: ok
+== r
+start: ok
+== r
+targets: ok 0
+== r
+file stats: ok 1208
+== r
+stream: ok type 2
+== r
+drop: ok
+== step
+--- after: REVOKE VIEW SERVER STATE FROM logminer_lab_low; GRANT VIEW SERVER PERFORMANCE STATE TO logminer_lab_low;
+== r
+create: ok
+== r
+start: ok
+== r
+targets: ok 0
+== r
+file stats: ok 1208
+== r
+stream: ok type 2
+== r
+drop: ok
