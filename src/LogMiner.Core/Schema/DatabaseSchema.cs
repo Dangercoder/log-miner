@@ -58,17 +58,18 @@ public sealed class DatabaseSchema
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(TableLayout, string, string), TableLayout> _renamed = new();
 
-    /// <summary>Captured tables that are called something else now than before (by the layouts known then, or after a restart by the log behind
-    /// <paramref name="position"/>).</summary>
+    /// <summary>Captured tables that were called something else since: by the layouts known before, or by the log behind those (after a restart, behind
+    /// <paramref name="position"/>). Also one that has its old name back: what was changed in between came under the other.</summary>
     public IEnumerable<(TableLayout Table, Lsn At, string Was)> Renamed(DatabaseSchema? previous, Lsn position)
     {
+        var known = previous?.AsOf ?? position;
         foreach (var t in Tables.DistinctBy(t => t.ObjectId))
         {
-            if (previous is not null)
-            {
-                if (previous.FindTable(t.ObjectId) is { } was && (was.Schema, was.Table) != (t.Schema, t.Table)) yield return (t, AsOf, $"{was.Schema}.{was.Table}");
-            }
-            else if (History.Renames.FirstOrDefault(r => r.ObjectId == t.ObjectId && r.At > position) is { } r && (r.Schema, r.Table) != (t.Schema, t.Table)) yield return (t, r.At, $"{r.Schema}.{r.Table}");
+            var renames = History.Renames.Where(r => r.ObjectId == t.ObjectId && r.At > known).ToList();
+            var names = renames.Select(r => $"{r.Schema}.{r.Table}");
+            if (previous?.FindTable(t.ObjectId) is { } was && (was.Schema, was.Table) != (t.Schema, t.Table)) names = names.Prepend($"{was.Schema}.{was.Table}");
+            var all = names.Distinct().ToList();
+            if (all.Count > 0) yield return (t, renames.Count > 0 ? renames[0].At : AsOf, string.Join(", ", all));
         }
     }
 

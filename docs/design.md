@@ -121,9 +121,10 @@ before a rebuild and published NULLs for altered columns — nightly index maint
 * **Nothing is skipped.** A committed change that still cannot be attributed to a layout stops its database's stream
   (`UndecodableChangeException`), log retained. The only records ignored are those of tables published by transactional replication.
 * During an ONLINE rebuild only the source rowset's records are replicated records (*measured*), so nothing is published twice.
-* **Every change comes under the name its table had when it was made**, whether the miner was there or not: renames and schema transfers are changes in
-  place of the table's row in `sysschobjs` (`experiments/38`) and are undone like the rest. A renamed table is a recorded gap (`Renamed`, with a load
-  by default): its rows were published under the old name.
+* **Every change comes under the name its table had when it was made**, whether the miner was there or not, also when the table is gone by now: renames and
+  schema transfers are changes in place of the table's row in `sysschobjs`, in one place or in several (`experiments/38`; of those only the old lengths
+  are logged), and are undone like the rest. A renamed table is a recorded gap (`Renamed`, with a load by default): its rows were published under the
+  old name. A schema that is gone has no name any more: `schema#<id>`.
 
 ## 2. Which of 1,200 databases changed? (the "doorbell")
 
@@ -197,7 +198,8 @@ SQL Server log ──read──> DatabaseCapture ──SendAsync──> [SpoolSi
    the checkpoint. With every checkpoint goes the destination's **receipt** for the newest message (stream, its creation, sequence, id). Before
    anything is sent again - at the start, and when a connection comes back - the destination is shown its receipts. One that does not have that
    message any more lost what it had acknowledged (a NATS host without power, between two syncs): the stream goes back to the safe position, whose
-   log SQL Server still has, and **publishes it again by itself**; loads that had ended meanwhile are requested again. Another stream than the
+   log SQL Server still has, and **publishes it again by itself**; loads that had ended shortly before are requested again (a load counts as done when
+   the stored receipt covers its end). Another stream than the
    one the receipt is of is a recorded gap and goes back, too. A stream that has no safe position yet goes back to where it began.
 5. Any failure rewinds that database to its durable checkpoint (never forward); the log is retained meanwhile. What committed before a
    transaction that cannot be decoded goes out first; it and everything behind it waits, however often it is tried.

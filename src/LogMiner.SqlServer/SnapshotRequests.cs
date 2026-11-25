@@ -63,18 +63,18 @@ public sealed class SnapshotRequests(string connectionString, string serverName)
         return list;
     }
 
-    /// <summary>The destination lost what it had acknowledged of these databases lately: rows of loads that ended just before may be among it.</summary>
-    public async Task RequestAgainAsync(IReadOnlyCollection<string> databases, TimeSpan completedWithin, CancellationToken ct)
+    /// <summary>The destination lost what it had acknowledged of these databases lately: rows of loads that ended since then may be among it.</summary>
+    public async Task RequestAgainAsync(IReadOnlyCollection<string> databases, DateTimeOffset since, CancellationToken ct)
     {
         await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);
         await using var cmd = new SqlCommand("""
             UPDATE dbo.snapshot_requests SET status = 'requested', started_at = NULL, completed_at = NULL
-            WHERE server_name = @s AND status IN ('done', 'partial') AND completed_at > DATEADD(second, -@within, SYSUTCDATETIME())
+            WHERE server_name = @s AND status IN ('done', 'partial') AND completed_at > @since
               AND (database_name = '*' OR database_name COLLATE DATABASE_DEFAULT IN (SELECT value COLLATE DATABASE_DEFAULT FROM OPENJSON(@dbs)));
             """, conn);
         cmd.Parameters.AddWithValue("@s", serverName);
-        cmd.Parameters.AddWithValue("@within", (int)Math.Min(int.MaxValue, completedWithin.TotalSeconds));
+        cmd.Parameters.Add(new SqlParameter("@since", System.Data.SqlDbType.DateTime2) { Value = since.UtcDateTime });
         cmd.Parameters.Add(new SqlParameter("@dbs", System.Data.SqlDbType.NVarChar, -1) { Value = System.Text.Json.JsonSerializer.Serialize(databases) });
         await cmd.ExecuteNonQueryAsync(ct);
     }

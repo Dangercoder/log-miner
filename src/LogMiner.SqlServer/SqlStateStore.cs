@@ -55,8 +55,10 @@ public sealed class SqlStateStore(string connectionString, string serverName) : 
             IF COL_LENGTH(N'dbo.checkpoints', N'resumed_at') IS NULL
                 ALTER TABLE dbo.checkpoints ADD resumed_at binary(10) NULL, resumed_in_gap bit NOT NULL CONSTRAINT df_checkpoints_in_gap DEFAULT 0;
             IF COL_LENGTH(N'dbo.checkpoints', N'receipt') IS NULL
-                ALTER TABLE dbo.checkpoints ADD settled bit NOT NULL CONSTRAINT df_checkpoints_settled DEFAULT 0, receipt nvarchar(2000) NULL,
+                ALTER TABLE dbo.checkpoints ADD settled bit NOT NULL CONSTRAINT df_checkpoints_settled DEFAULT 0, receipt nvarchar(4000) NULL,
                     safe_restart_lsn binary(10) NULL, safe_commit_lsn binary(10) NULL, safe_begin_lsn binary(10) NULL, safe_held bit NULL;
+            ELSE IF COL_LENGTH(N'dbo.checkpoints', N'receipt') < 8000
+                ALTER TABLE dbo.checkpoints ALTER COLUMN receipt nvarchar(4000) NULL;
             """, conn);
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -155,7 +157,7 @@ public sealed class SqlStateStore(string connectionString, string serverName) : 
                 MERGE dbo.checkpoints WITH (HOLDLOCK) AS t
                 USING (SELECT d, i, CONVERT(binary(10), r, 2) AS r, CONVERT(binary(10), c, 2) AS c, CONVERT(binary(10), b, 2) AS b, h, CONVERT(binary(10), a, 2) AS a, g, t, p,
                               CONVERT(binary(10), sr, 2) AS sr, CONVERT(binary(10), sc, 2) AS sc, CONVERT(binary(10), sb, 2) AS sb, sh
-                       FROM OPENJSON(@json) WITH (d sysname '$.d', i varchar(80) '$.i', r char(20) '$.r', c char(20) '$.c', b char(20) '$.b', h bit '$.h', a char(20) '$.a', g bit '$.g', t bit '$.t', p nvarchar(2000) '$.p',
+                       FROM OPENJSON(@json) WITH (d sysname '$.d', i varchar(80) '$.i', r char(20) '$.r', c char(20) '$.c', b char(20) '$.b', h bit '$.h', a char(20) '$.a', g bit '$.g', t bit '$.t', p nvarchar(4000) '$.p',
                                                   sr char(20) '$.sr', sc char(20) '$.sc', sb char(20) '$.sb', sh bit '$.sh')) AS s
                 ON t.server_name = @server AND t.database_name = s.d
                 WHEN MATCHED THEN UPDATE SET incarnation = s.i, restart_lsn = s.r, commit_lsn = s.c, begin_lsn = s.b, updated_at = SYSUTCDATETIME(), held = s.h, resumed_at = s.a, resumed_in_gap = s.g,

@@ -125,51 +125,118 @@ public static class CatalogHistory
                 history[rowset] = [new LayoutVersion(default, () => throw new CatalogHistoryException(ex.Message, ex))];
             }
         }
-        return new LayoutHistory(coversFrom, history, Moves(effective, formats[CatalogTable.Rowsets]), Renames(now, effective, formats[CatalogTable.Objects]));
+        return new LayoutHistory(coversFrom, history, Moves(effective, formats[CatalogTable.Rowsets]), Renames(now, effective, formats[CatalogTable.Objects], dropped, owner.Values.Where(o => o.IndexId is 0 or 1).Select(o => o.ObjectId).ToHashSet()));
     }
 
     /// <summary>
     /// Renames and schema transfers are changes in place to the table's row in sysschobjs, keyed by object id (experiments/38): of the schema's id, or
-    /// of the name, which is the row's only variable-length column (end offset and bytes, both in one piece). Undone from today's name backwards.
+    /// of the name, which is the row's only variable-length column (its end offset and its bytes, in one or in several places). Undone from today's name
+    /// backwards; a table that is gone, from the name it was dropped with.
     /// </summary>
-    private static List<TableRename> Renames(CatalogSnapshot now, List<Change> effective, TableLayout format)
+    private static List<TableRename> Renames(CatalogSnapshot now, List<Change> effective, TableLayout format, Dictionary<int, (string Name, int SchemaId)> dropped, HashSet<int> tables)
     {
         var renames = new List<TableRename>();
         var schemaAt = format.Visible.First(c => c.Name == "nsid").LeafOffset;
-        var fixedEnd = format.Columns.Where(c => c.LeafOffset >= 4).Max(c => c.LeafOffset + c.MaxInRowLength);
-        var nameAt = fixedEnd + 2 + (format.Columns.Count + 7) / 8 + 2; // behind the null bitmap and the number of variable columns
+        var nameAt = NameAt(format);
+        if (effective.FirstOrDefault(c => c.Table == CatalogTable.Objects && c.Operation == LogOperation.ModifyColumns
+                && (c.Raw.Key is not { Length: >= 5 } k || BinaryPrimitives.ReadInt32LittleEndian(k.AsSpan(1)) is var o && (now.Objects.ContainsKey(o) || tables.Contains(o)))) is { } unknown)
+            throw new CatalogHistoryException($"{unknown.Table} {unknown.Operation} at {unknown.Lsn} is not understood: {Convert.ToHexString(unknown.Raw.Row0 ?? [])} {Convert.ToHexString(unknown.Raw.Row1 ?? [])} {Convert.ToHexString(unknown.Raw.Data ?? [])}");
         foreach (var changes in effective.Where(c => c.Table == CatalogTable.Objects && c.Operation == LogOperation.ModifyRow && c.Raw.Key is { Length: >= 5 })
                      .GroupBy(c => BinaryPrimitives.ReadInt32LittleEndian(c.Raw.Key.AsSpan(1))))
         {
-            if (!now.Objects.TryGetValue(changes.Key, out var table)) continue;
-            var schema = now.SchemaNames.Where(s => s.Value == table.Schema).Select(s => (int?)s.Key).FirstOrDefault();
-            var nsid = BitConverter.GetBytes(schema ?? -1);
+            string last;
+            int schema;
+            if (now.Objects.TryGetValue(changes.Key, out var table))
+                (last, schema) = (table.Name, now.SchemaNames.Where(s => s.Value == table.Schema).Select(s => (int?)s.Key).FirstOrDefault() ?? -1);
+            else if (dropped.TryGetValue(changes.Key, out var gone)) (last, schema) = gone;
+            else continue;
+            var nsid = BitConverter.GetBytes(schema);
             var name = new List<byte>();
-            name.AddRange(BitConverter.GetBytes((ushort)(nameAt + 2 + 2 * table.Name.Length)));
-            name.AddRange(System.Text.Encoding.Unicode.GetBytes(table.Name));
-            foreach (var c in changes.OrderByDescending(c => c.Lsn))
+            name.AddRange(BitConverter.GetBytes((ushort)(nameAt + 2 + 2 * last.Length)));
+            name.AddRange(System.Runtime.InteropServices.MemoryMarshal.AsBytes(last.AsSpan())); // exactly, whatever is in it
+            try { Undo(changes.Key, changes); }
+            catch (CatalogHistoryException) when (!now.Objects.ContainsKey(changes.Key) && !tables.Contains(changes.Key)) { } // a constraint or the like that is gone
+
+            void Undo(int key, IEnumerable<Change> all)
             {
-                var (at, before, after) = ((int)c.Raw.Offset, c.Raw.Row0 ?? [], c.Raw.Row1 ?? []);
-                var changed = false;
-                for (var i = 0; i < before.Length && at + i < schemaAt + 4; i++)
-                    if (at + i >= schemaAt && before.Length == after.Length) (nsid[at + i - schemaAt], changed) = (before[i], changed || before[i] != after[i]);
-                if (at >= nameAt)
+                foreach (var record in all.OrderByDescending(c => c.Lsn).GroupBy(c => c.Lsn)) // the places of one record, the last one first
                 {
-                    if (at - nameAt + after.Length > name.Count || !name.Skip(at - nameAt).Take(after.Length).SequenceEqual(after))
-                        throw new CatalogHistoryException($"object {changes.Key}: the name {table.Name} does not agree with the change at {c.Lsn}");
-                    name.RemoveRange(at - nameAt, after.Length);
-                    name.InsertRange(at - nameAt, before);
-                    changed = true;
+                    var changed = false;
+                    foreach (var c in record)
+                    {
+                        var (at, before, after) = ((int)c.Raw.Offset, c.Raw.Row0 ?? [], c.Raw.Row1 ?? []);
+                        for (var i = 0; i < before.Length && at + i < schemaAt + 4; i++)
+                            if (at + i >= schemaAt && before.Length == after.Length) (nsid[at + i - schemaAt], changed) = (before[i], changed || before[i] != after[i]);
+                        if (at < nameAt)
+                        {
+                            var cut = nameAt - at; // a place that reaches from the fixed part into the name
+                            if (before.Length <= cut && after.Length <= cut) continue;
+                            if (before.Length < cut || after.Length < cut) throw new CatalogHistoryException($"object {key}: the change at {c.Lsn} is not understood");
+                            (at, before, after) = (nameAt, before[cut..], after[cut..]);
+                        }
+                        if (at - nameAt + after.Length > name.Count || !name.Skip(at - nameAt).Take(after.Length).SequenceEqual(after))
+                            throw new CatalogHistoryException($"object {key}: the name {last} does not agree with the change at {c.Lsn}");
+                        name.RemoveRange(at - nameAt, after.Length);
+                        name.InsertRange(at - nameAt, before);
+                        changed = true;
+                    }
+                    if (!changed) continue;
+                    var id = BitConverter.ToInt32(nsid);
+                    var bytes = name.ToArray();
+                    if (bytes.Length < 4 || BitConverter.ToUInt16(bytes) != nameAt + bytes.Length) throw new CatalogHistoryException($"object {key}: the name before the change at {record.Key} is not understood");
+                    // a schema that is gone has no name any more (and its id may be another's by now): that it was another one is reported either way
+                    renames.Add(new TableRename(record.Key, key, now.SchemaNames.GetValueOrDefault(id) ?? (id == -1 ? table!.Schema : string.Create(CultureInfo.InvariantCulture, $"schema#{id}")),
+                        new string(System.Runtime.InteropServices.MemoryMarshal.Cast<byte, char>(bytes.AsSpan(2)))));
                 }
-                if (!changed) continue;
-                var id = BitConverter.ToInt32(nsid);
-                var bytes = name.ToArray();
-                if (bytes.Length < 4 || BitConverter.ToUInt16(bytes) != nameAt + bytes.Length) throw new CatalogHistoryException($"object {changes.Key}: the name before the change at {c.Lsn} is not understood");
-                renames.Add(new TableRename(c.Lsn, changes.Key, now.SchemaNames.GetValueOrDefault(id) ?? table.Schema, System.Text.Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2)));
             }
         }
         renames.Sort((a, b) => a.At.CompareTo(b.At));
         return renames;
+    }
+
+    /// <summary>Where the end offset of the name is in a row of sysschobjs: behind the null bitmap and the number of variable columns.</summary>
+    private static int NameAt(TableLayout format) =>
+        format.Columns.Where(c => c.LeafOffset >= 4).Max(c => c.LeafOffset + c.MaxInRowLength) + 2 + (format.Columns.Count + 7) / 8 + 2;
+
+    /// <summary>
+    /// The same for a row of sysschobjs, where places of the variable part count: the name. Only the length a place had is logged; the one it got follows
+    /// from where the next place moved to, and that of the last one from how the name's end offset changed (experiments/38). The last place comes first,
+    /// and each where it is after the change: undone in this order, none moves another. What is not understood stays as it is, and matters when it is of a
+    /// table that is asked about.
+    /// </summary>
+    private static List<CatalogChange> ExpandObject(CatalogChange c, TableLayout format)
+    {
+        var data = c.Data ?? [];
+        if (c.Row0 is not { Length: > 0 } offsets || c.Row1 is not { } lengths || offsets.Length % 4 != 0 || lengths.Length * 2 != offsets.Length) return [c];
+        var n = lengths.Length / 2;
+        int From(int i) => BinaryPrimitives.ReadInt16LittleEndian(offsets.AsSpan(4 * i));
+        int To(int i) => BinaryPrimitives.ReadInt16LittleEndian(offsets.AsSpan(4 * i + 2));
+        int Had(int i) => BinaryPrimitives.ReadInt16LittleEndian(lengths.AsSpan(2 * i));
+        var nameAt = NameAt(format);
+        var changes = new List<CatalogChange>();
+        var (at, grown, ends) = (0, 0, 0); // bytes before this place became more by; the name's end offset by
+        for (var i = 0; i < n; i++)
+        {
+            var had = Had(i);
+            var afterAt = at + ((had + 3) & ~3);
+            if (From(i) < 4 || had < 0 || afterAt > data.Length || To(i) != From(i) + grown) return [c];
+            for (var b = 0; b < 2; b++) // the end offset lies before the name, where nothing has moved yet
+                if (From(i) <= nameAt + b && nameAt + b < From(i) + had)
+                {
+                    if (afterAt + nameAt + b - From(i) >= data.Length) return [c];
+                    ends += (data[afterAt + nameAt + b - From(i)] - data[at + nameAt + b - From(i)]) << (8 * b);
+                }
+            var has = i < n - 1 ? To(i + 1) - To(i) - From(i + 1) + From(i) + had : had + ends - grown;
+            if (has < 0 || afterAt + has > data.Length) return [c];
+            changes.Insert(0, new CatalogChange
+            {
+                Lsn = c.Lsn, Operation = LogOperation.ModifyRow, TransactionId = c.TransactionId, Table = c.Table, Offset = (short)To(i), Key = c.Key, UndoneAfter = c.UndoneAfter,
+                Row0 = data[at..(at + had)], Row1 = data[afterAt..(afterAt + has)],
+            });
+            grown += has - had;
+            at = afterAt + ((has + 3) & ~3);
+        }
+        return Math.Abs(data.Length - at) > 3 ? [c] : changes;
     }
 
     private static List<RowsetMove> Moves(List<Change> effective, TableLayout format)
@@ -194,6 +261,7 @@ public static class CatalogHistory
     /// </summary>
     public static IEnumerable<CatalogChange> Expand(CatalogChange c, IReadOnlyDictionary<CatalogTable, TableLayout> formats)
     {
+        if (c is { Operation: LogOperation.ModifyColumns, Compensation: false, Table: CatalogTable.Objects }) return ExpandObject(c, formats[c.Table]);
         if (c.Operation != LogOperation.ModifyColumns || c.Compensation || c.Table is not (CatalogTable.RowsetColumns or CatalogTable.Rowsets)) return [c];
         var data = c.Data ?? [];
         var fixedEnd = formats[c.Table].Columns.Where(x => x.LeafOffset >= 4).Max(x => x.LeafOffset + x.MaxInRowLength);
@@ -248,8 +316,7 @@ public static class CatalogHistory
             }
             kept.AddRange(alive);
         }
-        kept.Sort((a, b) => a.Lsn.CompareTo(b.Lsn));
-        return kept;
+        return [.. kept.OrderBy(c => c.Lsn)]; // a stable sort: the places of one record stay in their order
     }
 
     private static TransactionOutcome OutcomeOf(IReadOnlyDictionary<ulong, TransactionOutcome> outcomes, ulong xid) =>

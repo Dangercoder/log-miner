@@ -304,7 +304,7 @@ public sealed class DatabaseCapture
             if (Superseded) return null;                                // whatever was read last may be another database's
             if (_silent) return null;                                   // a "Latest" catch-up decides nothing until it ends
             if (_durable is null && _baseline is { } live) return live; // the start point is saved before anything is published
-            if (_ackedCommit.IsZero && _durable is null) return null;
+            if (_ackedCommit.IsZero && _durable is null && LoadsAcknowledged == 0) return null;
             var cp = Position();
             if (_durable is { } d && d.LastCommitLsn == cp.LastCommitLsn && d.RestartLsn == cp.RestartLsn && d.Held == cp.Held && d.ResumedAt == cp.ResumedAt && d.ResumedInGap == cp.ResumedInGap && d.Settled == cp.Settled && d.Safe == cp.Safe) return null;
             return cp;
@@ -385,6 +385,14 @@ public sealed class DatabaseCapture
         }
     }
     public Checkpoint? Durable { get { lock (_gate) return _durable; } }
+
+    private long _loadsAcknowledged;
+    /// <summary>Sends that held rows or markers of historical loads and were acknowledged.</summary>
+    internal long LoadsAcknowledged => Interlocked.Read(ref _loadsAcknowledged);
+    /// <summary>How many of them the receipt covers that is stored.</summary>
+    internal long LoadsCovered { get; set; }
+    /// <summary>A power failure of the destination that takes rows of the loads that ended would be noticed at the next start.</summary>
+    public bool LoadsAreCovered => Superseded || LoadsCovered >= LoadsAcknowledged;
 
     /// <summary>Records a failure and rewinds to the last durable checkpoint (events after it are replayed; duplicates carry the same ids).</summary>
     public void SetFault(Exception ex)
@@ -783,6 +791,7 @@ public sealed class DatabaseCapture
             LastPublishedAt = DateTimeOffset.UtcNow;
         }
         TransactionsPublished += batch.Count(r => r.Events.Count > 0);
+        if (batch.Any(r => r.IsSnapshot)) Interlocked.Increment(ref _loadsAcknowledged); // before the load counts as ended
         foreach (var r in batch) r.OnAcknowledged?.Invoke(); // snapshot progress moves only behind acknowledgements
         lock (_gate)
         {
@@ -883,15 +892,27 @@ public static class CheckpointCoordinator
     /// <param name="receiptOf">The destination's receipt for the newest message of a database: asked after the position was taken, so never older.</param>
     public static async Task SaveAsync(IReadOnlyCollection<DatabaseCapture> captures, ICheckpointStore store, CancellationToken ct, Func<string, string?>? receiptOf = null)
     {
-        var batch = new List<(DatabaseCapture Capture, Checkpoint Cp)>();
+        var batch = new List<(DatabaseCapture Capture, Checkpoint Cp, long Loads)>();
         foreach (var c in captures)
-            if (c.PendingCheckpoint() is { } cp) batch.Add((c, cp with { Receipt = receiptOf?.Invoke(c.Name) ?? c.Durable?.Receipt })); // nothing acknowledged since the start: the old one still stands
+        {
+            var loads = c.LoadsAcknowledged;
+            var pending = c.PendingCheckpoint();
+            // rows of a load do not move the position, but they are acknowledged messages, too, that the destination may lose
+            if (pending is null && loads != c.LoadsCovered && !c.Superseded && c.Durable is { } durable) pending = durable with { UpdatedAt = DateTimeOffset.UtcNow };
+            if (pending is null) continue;
+            batch.Add((c, pending with { Receipt = receiptOf?.Invoke(c.Name) ?? c.Durable?.Receipt }, loads)); // nothing acknowledged since the start: the old one still stands
+        }
         if (batch.Count > 0)
         {
             await store.SaveAsync(batch.Select(b => b.Cp).ToArray(), ct);
-            foreach (var (c, cp) in batch) c.MarkDurable(cp);
+            foreach (var (c, cp, loads) in batch) { c.MarkDurable(cp); c.LoadsCovered = loads; }
         }
     }
+
+    /// <summary>Time that only goes forward, whatever is done to the clock: an interval is waited for, not set.</summary>
+    public static DateTimeOffset Now => Started + System.Diagnostics.Stopwatch.GetElapsedTime(StartedTicks);
+    private static readonly DateTimeOffset Started = DateTimeOffset.UtcNow;
+    private static readonly long StartedTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
     /// <summary>
     /// Strictly behind what <see cref="SaveAsync"/> made durable, and not before it has been that for <paramref name="releaseInterval"/>: an
@@ -901,20 +922,20 @@ public static class CheckpointCoordinator
     public static async Task ReleaseAsync(IReadOnlyCollection<DatabaseCapture> captures, ILogReleaser releaser, TimeSpan releaseInterval,
         Action<DatabaseCapture, Exception>? onReleaseError, CancellationToken ct, DateTimeOffset? at = null)
     {
-        var now = at ?? DateTimeOffset.UtcNow;
         foreach (var c in captures)
         {
-            if (c.ReleasedByOthers || now < c.ReleaseRetryAt) continue;
+            var now = at ?? Now; // of this database: a release that waits in another one must not make its position look older than it is
+            if (now < c.ReleaseRetryAt) continue;
             (Lsn Begin, Lsn Commit) target;
             if (releaseInterval > TimeSpan.Zero)
             {
                 if (now - c.ReleasedAt >= releaseInterval && c.NeedsLook) c.Look(now);
-                if (c.ReleaseDue is not { } due) continue;
+                if (c.ReleasedByOthers || c.ReleaseDue is not { } due) continue;
                 target = due;
             }
             else
             {
-                if (c.Releasable is not { } newest || newest.Commit <= c.ReleasedThrough) continue;
+                if (c.ReleasedByOthers || c.Releasable is not { } newest || newest.Commit <= c.ReleasedThrough) continue;
                 target = newest;
             }
             try
@@ -924,7 +945,7 @@ public static class CheckpointCoordinator
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
-                c.ReleaseRetryAt = now + releaseInterval;
+                c.ReleaseRetryAt = (at ?? Now) + releaseInterval;
                 onReleaseError?.Invoke(c, ex);
             }
         }
@@ -932,6 +953,6 @@ public static class CheckpointCoordinator
 
     /// <summary>Those <see cref="ReleaseAsync"/> would do something for (the destination is asked about them first).</summary>
     public static IReadOnlyList<DatabaseCapture> Due(IReadOnlyCollection<DatabaseCapture> captures, TimeSpan releaseInterval, DateTimeOffset now) =>
-        captures.Where(c => !c.ReleasedByOthers && now >= c.ReleaseRetryAt && (releaseInterval > TimeSpan.Zero ? c.ReleaseDue is not null || (now - c.ReleasedAt >= releaseInterval && c.NeedsLook)
-            : c.Releasable is { } r && r.Commit > c.ReleasedThrough)).ToList();
+        captures.Where(c => now >= c.ReleaseRetryAt && (releaseInterval > TimeSpan.Zero ? (!c.ReleasedByOthers && c.ReleaseDue is not null) || (now - c.ReleasedAt >= releaseInterval && c.NeedsLook)
+            : !c.ReleasedByOthers && c.Releasable is { } r && r.Commit > c.ReleasedThrough)).ToList();
 }

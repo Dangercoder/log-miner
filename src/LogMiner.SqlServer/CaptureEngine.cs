@@ -361,7 +361,7 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
                 try
                 {
                     // the point of no return: not on the strength of the acknowledgements alone
-                    var due = CheckpointCoordinator.Due(Captures, options.ReleaseInterval, DateTimeOffset.UtcNow);
+                    var due = CheckpointCoordinator.Due(Captures, options.ReleaseInterval, CheckpointCoordinator.Now);
                     if (due.Count == 0) continue;
                     var problems = await sink.AuditAsync(due.Select(c => c.Name).ToHashSet(StringComparer.Ordinal), ct);
                     AuditProblem = problems.Count == 0 ? null : $"{problems.Count} database(s), e.g. {problems.First().Key}: {problems.First().Value}";
@@ -383,9 +383,13 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
             else _log.LogWarning(ex, "sp_repldone failed for {Database} (is a CDC capture job or Log Reader Agent running?)", c.Name);
         }, ct);
 
+    private readonly SemaphoreSlim _flushing = new(1, 1); // two saves at a time could take a position back
+
     public async Task FlushAsync(bool releaseLog, CancellationToken ct)
     {
-        await CheckpointCoordinator.SaveAsync(Captures, checkpoints, ct, sink.ReceiptOf);
+        await _flushing.WaitAsync(ct);
+        try { await CheckpointCoordinator.SaveAsync(Captures, checkpoints, ct, sink.ReceiptOf); }
+        finally { _flushing.Release(); }
         if (releaseLog) await ReleaseAsync(Captures, ct);
         foreach (var c in Captures) if (c.Dirty) MarkDirty(c); // e.g. a "Latest" start whose start point just became durable
     }
@@ -531,7 +535,8 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
                 if (!s.Done && !(_captures.TryGetValue(c.DatabaseId, out var current) && ReferenceEquals(current, c)))
                     s.Abandon("the database was removed or re-created during the load");
             var rows = a.Tables.Sum(t => t.Snapshot.RowsEmitted);
-            var finished = a.PendingDatabases.Count == 0 && a.Tables.All(t => t.Snapshot.Done);
+            // not before the stored receipts cover its last rows: what the destination loses of it after that is noticed at the next start
+            var finished = a.PendingDatabases.Count == 0 && a.Tables.All(t => t.Snapshot.Done && (t.Snapshot.Failed || t.Capture.LoadsAreCovered));
             var problemsNow = a.Problems.Concat(a.Tables.Where(t => t.Snapshot.Failed).Select(t => $"{t.Capture.Name}.{t.Snapshot.Table.Schema}.{t.Snapshot.Table.Table}: {t.Snapshot.Error}")).ToList();
             string? status = !finished ? null
                 : a.Tables.Count == 0 || a.Tables.All(t => t.Snapshot.Failed) ? "failed"
@@ -575,10 +580,11 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
     /// </summary>
     private async Task CheckReceiptsAsync(Dictionary<string, Checkpoint> positions, IReadOnlyDictionary<string, string> incarnations, CancellationToken ct)
     {
-        var receipts = positions.Values.Where(p => p.Receipt is not null && incarnations.GetValueOrDefault(p.Database) == p.Incarnation).ToDictionary(p => p.Database, p => p.Receipt!, StringComparer.Ordinal);
+        var receipts = positions.Where(p => p.Value.Receipt is not null && incarnations.GetValueOrDefault(p.Key) == p.Value.Incarnation).ToDictionary(p => p.Key, p => p.Value.Receipt!, StringComparer.Ordinal);
         if (receipts.Count == 0) return;
         var states = await sink.VerifyAsync(receipts, ct);
         var back = new List<Checkpoint>();
+        var lastSaved = receipts.Keys.ToDictionary(name => name, name => positions[name].UpdatedAt, StringComparer.Ordinal);
         foreach (var (name, state) in states.Where(s => s.Value is ReceiptState.Lost or ReceiptState.OtherDestination))
         {
             var cp = positions[name];
@@ -605,9 +611,15 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
                 back.Add(positions[name]);
             }
         }
+        // the loads first: once the positions are saved nothing says any more that anything was lost
+        var lost = states.Where(s => s.Value == ReceiptState.Lost).Select(s => s.Key).ToList();
+        if (options.SnapshotRequests is { } requests && lost.Count > 0)
+        {
+            // what it lost it had got shortly before the last position was saved, or after; how long nothing ran since does not matter
+            await requests.EnsureTableAsync(ct);
+            await requests.RequestAgainAsync(lost, lost.Min(name => lastSaved[name]) - options.ReleaseInterval * 2 - TimeSpan.FromMinutes(1), ct);
+        }
         if (back.Count > 0) await checkpoints.SaveAsync(back, ct);
-        if (options.SnapshotRequests is { } requests && states.Any(s => s.Value == ReceiptState.Lost))
-            await requests.RequestAgainAsync(states.Where(s => s.Value == ReceiptState.Lost).Select(s => s.Key).ToList(), options.ReleaseInterval * 2 + TimeSpan.FromMinutes(1), ct);
     }
 
     /// <summary>Adds captures for new (e.g. newly created tenant) databases and drops captures of removed ones.

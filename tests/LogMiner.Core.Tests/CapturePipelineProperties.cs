@@ -204,6 +204,154 @@ public class CapturePipelineProperties
         Assert.Equal(0, m.Gaps);
     }
 
+    /// <summary>One database with its own log, destination and stored position (several of them share one release pass, as in the engine).</summary>
+    private sealed class Tenant : IDisposable
+    {
+        public void Dispose() => Sink.Shutdown();
+        public readonly MemoryCheckpointStore Store = new();
+        public readonly FaultySink Sink = new();
+        public readonly SimulatedLog Db;
+        public DatabaseCapture Capture;
+        private readonly EventEncoder _encoder = new(new EncoderOptions { ServerName = "test" });
+        private readonly CaptureSettings _settings = new() { StartPosition = StartPosition.Earliest, MaxRowsPerRead = 40, MaxBatchEvents = 8 };
+        private readonly int _id;
+
+        public Tenant(int id)
+        {
+            _id = id;
+            Db = new SimulatedLog(() => Sync(() => Store.LoadAsync("db", CancellationToken.None))?.LastCommitLsn ?? default);
+            Db.HasPosition = () => true;
+            Capture = new DatabaseCapture(id, "db", "inc1", null, StartPosition.Earliest);
+        }
+
+        public void Pump()
+        {
+            for (var i = 0; i < 1000 && Sync(() => Capture.PumpAsync(Db, _encoder, Sink, _settings, CancellationToken.None, Db, null)); i++) { }
+        }
+        public void Save() => Sync(() => CheckpointCoordinator.SaveAsync([Capture], Store, CancellationToken.None, Sink.ReceiptOf));
+        public void Work() { Db.CommitNewInsert(); Pump(); Save(); }
+
+        /// <summary>The process starts again; what CaptureEngine.CheckReceiptsAsync does before anything is sent.</summary>
+        public ReceiptState Restart()
+        {
+            var position = Sync(() => Store.LoadAsync("db", CancellationToken.None))!;
+            var state = position.Receipt is { } receipt
+                ? Sync(() => Sink.VerifyAsync(new Dictionary<string, string> { ["db"] = receipt }, CancellationToken.None).AsTask())["db"] : ReceiptState.Unknown;
+            if (state == ReceiptState.Lost)
+            {
+                position = position.Rewound() ?? throw new Xunit.Sdk.XunitException("no safe position");
+                Sync(() => Store.SaveAsync([position], CancellationToken.None));
+            }
+            Sink.NewProducer();
+            Capture = new DatabaseCapture(_id, "db", "inc1", position, StartPosition.Earliest);
+            return state;
+        }
+    }
+
+    private sealed class StallingReleaser(Tenant a, Tenant b) : ILogReleaser
+    {
+        /// <summary>What happens while the next sp_repldone of database a waits.</summary>
+        public Action? Stall { get; set; }
+        public async Task ReleaseAsync(DatabaseRef database, Lsn beginLsn, Lsn commitLsn, CancellationToken ct)
+        {
+            if (database.Id != 5) { await b.Db.ReleaseAsync(database, beginLsn, commitLsn, ct); return; }
+            var stall = Stall;
+            Stall = null;
+            if (stall is not null) await Task.Run(stall, ct);
+            await a.Db.ReleaseAsync(database, beginLsn, commitLsn, ct);
+        }
+    }
+
+    /// <summary>
+    /// "The position that was durable at the last look is an interval old" holds only if a look is stamped with the time it happens at. A release pass
+    /// stamps every look with the time the pass began, and waits for sp_repldone database by database (30 s command timeout): behind one that waits,
+    /// a position that is milliseconds old is recorded as looked at when the pass began, and the next pass makes it the safe position at once.
+    /// </summary>
+    [Fact]
+    public void A_release_that_waits_in_one_database_does_not_make_a_fresh_position_of_another_safe()
+    {
+        var interval = TimeSpan.FromMilliseconds(1500);
+        using var a = new Tenant(5);
+        using var b = new Tenant(6);
+        var releaser = new StallingReleaser(a, b);
+        void Pass() => Sync(() => CheckpointCoordinator.ReleaseAsync([a.Capture, b.Capture], releaser, interval, null, CancellationToken.None)); // as CaptureEngine.ReleaseAsync calls it
+        void Wait() => Thread.Sleep(interval + TimeSpan.FromMilliseconds(50));
+        try
+        {
+            a.Work(); b.Work(); Pass();
+            Wait(); a.Work(); b.Work(); Pass();
+            Wait(); a.Work(); b.Work(); Pass(); a.Save(); b.Save();
+            Wait(); Pass(); a.Save(); b.Save();
+            // the premise: both are idle, their newest position is the safe one, and a release of each is due
+            Assert.Equal(a.Capture.Durable!.LastCommitLsn, a.Capture.Durable.Safe!.CommitLsn);
+            Assert.Equal(b.Capture.Durable!.LastCommitLsn, b.Capture.Durable.Safe!.CommitLsn);
+            Wait();
+
+            // sp_repldone waits in database a for longer than the interval; at the end of that time a change of b is published and its position saved
+            Stopwatch? durableSince = null;
+            Lsn fresh = default;
+            releaser.Stall = () =>
+            {
+                Thread.Sleep(interval + TimeSpan.FromMilliseconds(300));
+                b.Sink.Sync(); // the destination has everything up to here on disk
+                b.Db.CommitNewInsert();
+                b.Pump();
+                b.Save();
+                fresh = b.Capture.Durable!.LastCommitLsn;
+                durableSince = Stopwatch.StartNew();
+            };
+            Pass();     // a's release waits; then b is looked at, with the time at which the pass began
+            Assert.NotNull(durableSince);
+            Pass();     // the next tick of the timer (which is overdue)
+            b.Save();   // the checkpoint loop
+            var age = durableSince!.Elapsed;
+            var safe = b.Capture.Durable!.Safe!.CommitLsn;
+            Pass();     // releases behind it
+
+            // the power fails before the destination's next sync
+            var lost = b.Sink.LoseTail(12);
+            var state = b.Restart();
+            b.Pump();
+            b.Save();
+            var delivered = b.Sink.Stored.Select(m => m.MessageId).Distinct().Count();
+            Assert.True(delivered == b.Db.Expected.Count,
+                $"{b.Db.Expected.Count - delivered} committed change(s) of b are not in the destination and are not published again: the position {fresh} became the safe position ({safe}) " +
+                $"{age.TotalMilliseconds:F0} ms after it was saved (release interval {interval.TotalMilliseconds:F0} ms); the destination lost {lost} message(s), the receipt was {state}, " +
+                $"the stream went back to {b.Capture.Durable!.LastCommitLsn}, sp_repldone through {b.Db.ReleasedThrough}");
+        }
+        finally { a.Sink.Shutdown(); b.Sink.Shutdown(); }
+    }
+
+    /// <summary>
+    /// Rows of a load do not move the position, so no checkpoint is saved for them, and the receipt that is stored stays that of an older message. The
+    /// destination loses the end of the load; the receipt is still there; nothing says that anything was lost, and the request stays "done".
+    /// </summary>
+    [Fact]
+    public void The_end_of_a_load_that_the_destination_lost_is_noticed_at_the_next_start()
+    {
+        using var t = new Tenant(5);
+        try
+        {
+            for (var i = 0; i < 4; i++) t.Work();
+            t.Sink.Sync(); // on disk
+            var load = new TableSnapshot(SimulatedLog.Layout, "load1", 3);
+            t.Capture.RequestSnapshot(load);
+            var sw = Stopwatch.StartNew();
+            while (!load.Done && sw.Elapsed < TimeSpan.FromSeconds(10)) { t.Pump(); t.Save(); }
+            Assert.True(load.Done && !load.Failed, "the load ended (the engine reports its request as done)");
+            t.Save();
+            var acknowledged = t.Sink.ReceiptOf("db");
+            var stored = Sync(() => t.Store.LoadAsync("db", CancellationToken.None))!.Receipt;
+            var lost = t.Sink.LoseTail(12); // the power fails before the destination's next sync
+            Assert.True(lost > 0);
+            var state = t.Restart();
+            Assert.True(state == ReceiptState.Lost,
+                $"the destination lost {lost} acknowledged message(s) of the load (rows and its end marker); the newest acknowledged message was {acknowledged}, the receipt stored with the position " +
+                $"is {stored}, and it is {state}: nothing is published or requested again");
+        }
+        finally { t.Sink.Shutdown(); }
+    }
+
     private static T Sync<T>(Func<Task<T>> f) => LogMiner.Tests.Blocking.Run(f);
     private static void Sync(Func<Task> f) => LogMiner.Tests.Blocking.Run(f);
 

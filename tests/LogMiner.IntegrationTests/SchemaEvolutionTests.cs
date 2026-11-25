@@ -144,6 +144,81 @@ public class SchemaEvolutionTests
         Assert.Equal(told, h.Gaps.Count);
     }
 
+    /// <summary>Whatever SQL Server logs for a rename (one place or several), every change comes under the name of its moment; also when the table is dropped
+    /// in the end, came from a schema that is gone, or has its first name again.</summary>
+    [Theory]
+    [InlineData(1, "stays")]
+    [InlineData(2, "stays")]
+    [InlineData(3, "dropped")]
+    [InlineData(4, "back")]
+    [InlineData(5, "schema dropped")]
+    public async Task Any_sequence_of_renames(int seed, string end)
+    {
+        await using var h = await CaptureHarness.CreateAsync("CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NULL);", ["t"]);
+        await h.SqlAsync("INSERT dbo.t (id) VALUES (0);");
+        await h.PumpAllAsync();
+        await h.CheckpointAsync(release: true);
+        foreach (var s in new[] { "s1", "s2", "s3" }) await h.SqlAsync($"CREATE SCHEMA {s};");
+        var rng = new Random(seed);
+        var expected = new List<(int Id, string Table)>();
+        var (schema, name) = ("dbo", "t");
+        string Q() => $"[{schema}].[{name}]";
+        string Edit(string x)
+        {
+            var chars = x.ToList();
+            for (var i = rng.Next(1, 4); i > 0; i--)
+            {
+                var at = rng.Next(chars.Count + 1);
+                var what = rng.Next(3);
+                if (what == 0 && chars.Count < 100) chars.InsertRange(at, "_9å表X".Take(rng.Next(1, 6)));
+                else if (what == 1 && chars.Count > 8) chars.RemoveRange(Math.Min(at, chars.Count - 2), 2);
+                else if (at < chars.Count) chars[at] = (char)('a' + rng.Next(26));
+            }
+            return new string([.. chars]);
+        }
+        async Task RenameAsync(string to)
+        {
+            if (to == name) return;
+            await h.SqlAsync($"EXEC sys.sp_rename N'{Q()}', N'{to}';");
+            name = to;
+        }
+        for (var i = 1; i <= 60; i++)
+        {
+            await RenameAsync(i == 1 ? "abcdefghijklmnopqrstuvwxyz" : rng.Next(10) == 0 ? "table_" + new string('x', rng.Next(90)) : Edit(name));
+            if (rng.Next(6) == 0)
+            {
+                var to = end == "schema dropped" ? "dbo" : new[] { "dbo", "s1", "s2" }[rng.Next(3)];
+                if (to != schema) { await h.SqlAsync($"ALTER SCHEMA {to} TRANSFER {Q()};"); schema = to; }
+            }
+            await h.SqlAsync($"INSERT {Q()} (id) VALUES ({i});");
+            expected.Add((i, $"{schema}.{name}"));
+            if (end == "schema dropped" && i == 20) { await h.SqlAsync($"ALTER SCHEMA s3 TRANSFER {Q()};"); schema = "s3"; }
+        }
+        if (end == "schema dropped") { await h.SqlAsync($"ALTER SCHEMA dbo TRANSFER {Q()};"); schema = "dbo"; await h.SqlAsync("DROP SCHEMA s3;"); }
+        if (end == "back") { await h.SqlAsync(schema == "dbo" ? "SELECT 1" : $"ALTER SCHEMA dbo TRANSFER {Q()};"); schema = "dbo"; await RenameAsync("t"); }
+        if (end == "dropped") await h.SqlAsync($"DROP TABLE {Q()};");
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(TestServer.ConnectionString(h.Db)))
+        {
+            await conn.OpenAsync();
+            await using var cmd = new Microsoft.Data.SqlClient.SqlCommand("SELECT COUNT(*) FROM sys.fn_dblog(NULL, NULL) WHERE AllocUnitId = 281474978938880 AND Operation = 'LOP_MODIFY_COLUMNS'", conn);
+            Assert.True((int)(await cmd.ExecuteScalarAsync())! > 3, "the premise: some renames are logged in several places");
+        }
+        await h.RestartAsync();
+        await h.PumpAllAsync();
+        var got = h.Events().Select(e => (Id: e.GetProperty("after").GetProperty("id").GetInt32(), Table: $"{e.GetProperty("source").GetProperty("schema").GetString()}.{e.GetProperty("source").GetProperty("table").GetString()}"))
+            .Where(e => e.Id > 0).OrderBy(e => e.Id).ToList();
+        if (end == "schema dropped")
+        {
+            // the name of a schema that is gone is gone with it
+            Assert.Equal(expected.Select(e => e.Id), got.Select(e => e.Id));
+            foreach (var (e, g) in expected.Zip(got))
+                if (e.Table.StartsWith("s3.", StringComparison.Ordinal)) Assert.Equal(("schema#", e.Table[2..]), (g.Table[..7], g.Table[g.Table.IndexOf('.', StringComparison.Ordinal)..]));
+                else Assert.Equal(e, g);
+        }
+        else Assert.Equal(expected, got);
+        if (end != "dropped") Assert.Contains(h.Gaps, g => g.Continuity == LogMiner.Capture.LogContinuity.Renamed && g.Reason.Contains("dbo.abcdefghijklmnopqrstuvwxyz", StringComparison.Ordinal));
+    }
+
     /// <summary>An altered column has another hbcolid than null bit; widening it is a change in place, logged by hbcolid.</summary>
     [Fact]
     public Task Alter_a_column_then_widen_it_in_place() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(40) COLLATE Cyrillic_General_CI_AS NULL;"), Dml2,

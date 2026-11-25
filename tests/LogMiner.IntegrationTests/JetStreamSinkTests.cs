@@ -447,6 +447,83 @@ public sealed class JetStreamSinkTests : IDisposable
         finally { await TestServer.DropDatabaseAsync(db); }
     }
 
+    /// <summary>The power fails right after a load was reported as done, before NATS has its end on disk, and everything comes back two hours later. No
+    /// position says so (rows of a load do not move it), only the receipt. Found by a review: the rows were lost, and the request stayed "done".</summary>
+    [Fact]
+    public async Task The_end_of_a_load_that_was_lost_in_a_power_failure_is_loaded_again()
+    {
+        if (Exe is null) return;
+        await StartServerAsync();
+        var db = await TestServer.CreateDatabaseAsync("CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NOT NULL); INSERT dbo.t SELECT TOP (20) ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 0 FROM sys.all_objects;", "t");
+        var state = "lm_state_" + Guid.NewGuid().ToString("N")[..10];
+        await TestServer.ExecAsync($"CREATE DATABASE [{state}];");
+        var copy = _dir + "-copy";
+        try
+        {
+            async Task<(CaptureEngine Engine, SqlStateStore Store, JetStreamSink Sink)> RunAsync()
+            {
+                var store = new SqlStateStore(TestServer.ConnectionString(state), "srv");
+                await store.EnsureSchemaAsync(CancellationToken.None);
+                await store.AcquireLeaseAsync(null, CancellationToken.None);
+                var sink = Sink();
+                var engine = new CaptureEngine(new CaptureOptions
+                {
+                    ConnectionString = TestServer.ConnectionString(), DatabaseFilter = n => n == db, Workers = 1, CheckpointInterval = TimeSpan.FromMilliseconds(50), ReleaseInterval = TimeSpan.FromSeconds(1),
+                    Settings = new CaptureSettings { StartPosition = StartPosition.Latest }, HoldCheckInterval = TimeSpan.FromHours(1), SnapshotRequests = new SnapshotRequests(TestServer.ConnectionString(state), "srv"),
+                }, new DmvPollSignal(TestServer.ConnectionString(), TimeSpan.FromMilliseconds(5)), new EventEncoder(new EncoderOptions { ServerName = "it" }), sink, store);
+                await engine.StartAsync(CancellationToken.None);
+                for (var i = 0; i < 400 && engine.Captures.Any(c => !c.Live || c.HoldingForBaseline); i++) await Task.Delay(20);
+                return (engine, store, sink);
+            }
+            async Task<List<string>> OpsAsync() => (await StoredAsync()).DistinctBy(m => m.Id).Select(m =>
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(m.Data);
+                var op = doc.RootElement.GetProperty("op").GetString()!;
+                return op == "l" ? "l " + doc.RootElement.GetProperty("load").GetProperty("phase").GetString() : $"{op} {doc.RootElement.GetProperty("after").GetProperty("id").GetInt32()}";
+            }).ToList();
+            async Task<string> StatusAsync()
+            {
+                await using var conn = new Microsoft.Data.SqlClient.SqlConnection(TestServer.ConnectionString(state));
+                await conn.OpenAsync();
+                await using var cmd = new Microsoft.Data.SqlClient.SqlCommand("SELECT status FROM dbo.snapshot_requests", conn);
+                return (string)(await cmd.ExecuteScalarAsync())!;
+            }
+            async Task DoneAsync()
+            {
+                for (var i = 0; i < 300 && await StatusAsync() != "done"; i++) await Task.Delay(50);
+                Assert.Equal("done", await StatusAsync());
+            }
+
+            var (engine, store, sink) = await RunAsync();
+            await TestServer.ExecAsync("INSERT dbo.t VALUES (100, 1);", db);
+            for (var i = 0; i < 400 && !(await OpsAsync()).Contains("c 100"); i++) await Task.Delay(20);
+            await Task.Delay(3500); // several looks
+            StopServer(); CopyDirectory(_dir, copy); await StartServerAsync(); // what NATS has on disk at its last sync
+            for (var i = 0; i < 400 && !sink.Health.Healthy; i++) await Task.Delay(20);
+            await TestServer.ExecAsync($"INSERT dbo.snapshot_requests (server_name, database_name, table_name, chunk_size) VALUES ('srv', '{db}', NULL, 7);", state);
+            await DoneAsync();
+            // at this moment the power fails
+            await engine.DisposeAsync(); await store.DisposeAsync(); await sink.DisposeAsync();
+            Assert.Contains("l end", await OpsAsync());
+            StopServer(); Directory.Delete(_dir, recursive: true); Directory.Move(copy, _dir); await StartServerAsync();
+            Assert.Equal(["c 100"], await OpsAsync());
+            await TestServer.ExecAsync("UPDATE dbo.checkpoints SET updated_at = DATEADD(hour, -2, updated_at); UPDATE dbo.snapshot_requests SET completed_at = DATEADD(hour, -2, completed_at);", state);
+            (engine, store, sink) = await RunAsync();
+            for (var i = 0; i < 200 && !(await OpsAsync()).Contains("l end"); i++) await Task.Delay(100);
+            await DoneAsync();
+            var ops = await OpsAsync();
+            Assert.Equal("l begin", ops.First(o => o != "c 100"));
+            Assert.Equal("l end", ops[^1]);
+            Assert.Equal(Enumerable.Range(1, 20).Append(100).Select(i => $"r {i}").Order(), ops.Where(o => o[0] == 'r').Distinct().Order());
+            await engine.DisposeAsync(); await store.DisposeAsync(); await sink.DisposeAsync();
+        }
+        finally
+        {
+            await TestServer.DropDatabaseAsync(db);
+            await TestServer.DropDatabaseAsync(state);
+        }
+    }
+
     private static void CopyDirectory(string from, string to)
     {
         Directory.CreateDirectory(to);
