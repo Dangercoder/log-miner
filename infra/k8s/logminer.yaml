@@ -18,7 +18,7 @@ data:
   LogMiner__Sink__NatsJetStream__Url: "nats://nats.nats.svc:4222"
   LogMiner__Sink__NatsJetStream__Stream: "LOGMINER"
   LogMiner__Sink__NatsJetStream__Replicas: "3"  # with three NATS servers; only used when the stream is created
-  LogMiner__MaxBufferedMb: "512"                # of one transaction; see the memory limit below
+  LogMiner__MaxBufferedMb: "512"                # per database; several at once must fit the memory limit below
   Logging__Console__FormatterName: "json"
 ---
 apiVersion: apps/v1

@@ -463,7 +463,8 @@ issuing the insert to the consumer receiving the event from JetStream.
 
 ### Off the database host (a container, Kubernetes)
 The service is managed code and runs as a Linux container as it is (`Dockerfile`, 223 MB, no shell, not root, read-only root file system; `infra/k8s`). Position,
-gaps, requests and the lease are in SQL Server, so a pod has no volume. *Measured*:
+gaps, requests and the lease are in SQL Server, so a pod has no volume. *Measured* on one machine (the Windows instance, 1,200 databases, 200 tx/s, one run each
+after 60 s; run to run, p99 varies between 7 and 14 ms):
 
 | | p50 | p99 | CPU of `logminer` | of its SQL sessions |
 |---|---|---|---|---|
@@ -471,8 +472,11 @@ gaps, requests and the lease are in SQL Server, so a pod has no volume. *Measure
 | TCP with encryption | 4.1 ms | 18 ms | 16 % | 6.3 % |
 | TCP with encryption, SqlClient's managed network layer (the only one on Linux) | 4.7 ms | 15 ms | 21 % | 5.5 % |
 
-* These are on one machine. A network adds about two round trips per event (the push and the read), three with the collection of the push: well under 1-2 ms
-  within a data centre. Across regions it is not what this is for.
+* A network adds about two round trips per event (the push and the read), three with the collection of the push. That is an *estimate* (well under 1-2 ms
+  within a data centre); with emulated delay the lab could not show it, because its commits take 20 ms and SQL Server on Linux makes the miner wait for the disk.
+  Across regions it is not what this is for.
+* **Not run:** a Linux pod against a Windows SQL Server with 1,200 databases (the pod ran against the lab, SQL Server on Linux, 5 databases), and the manifest on a
+  real cluster (the containers ran under docker with the manifest's restrictions).
 * **Failover** (two pods, the lease in SQL Server; lab, 5 databases under load): `SIGTERM` 0.7-1.5 s, `SIGKILL` 0.6 s, network of the active pod cut **41-43 s**
   (SQL Server's TCP keep-alive, 30 s by default, has to notice; a setting of the instance). The cut-off pod cannot write a position any more and ends its process.
   Over all of these and a NATS restart: 34,176 messages, all tables verified by `logminer-verify`, no gap. With 1,200 databases the last one is current
@@ -486,7 +490,8 @@ gaps, requests and the lease are in SQL Server, so a pod has no volume. *Measure
   What it gains: the miner's CPU and memory are not the database's, and SQL Server, NATS and the miner do not lose power together.
 * SQL Server *on Linux* announces a block before it is on disk: reads are repeated until it is (section 2), which costs CPU in proportion to how slow its disk is
   (lab, 20 ms per commit: four reads per event, 65 % of a core at 200 tx/s). On Windows there are none.
-* Memory: `MaxBufferedMb` is per transaction that is buffered; the limit of the pod has to be above it (512 MB and 2 GiB in `infra/k8s`).
+* Memory: `MaxBufferedMb` is per database (what its open transactions hold); several large transactions in several databases at once can together exceed the
+  pod's limit, and the pod is then restarted again and again until it is raised (512 MB and 2 GiB in `infra/k8s`: allow for that).
 * Probes and metrics: `HealthPort` (`/livez`, `/readyz`, `/metrics`). The standby is ready, too. Liveness fails only for a run that neither works nor ends: what can
   be started over is started over inside the process.
 

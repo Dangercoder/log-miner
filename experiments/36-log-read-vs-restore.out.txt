@@ -189,3 +189,23 @@ When a variant HANGS the instance its lines only show the header (the harness ca
 == shipped, 2 readers, 1 ms pause, 20 ms back-off, up to 3 s between two operations
 (restore: see the sums: restore 98 ok, offline 142 ok, none refused, 0 assertions, 8530 complete cycles)
 (offline: see the sums: restore 98 ok, offline 142 ok, none refused, 0 assertions, 8530 complete cycles)
+
+== 2026-11-25 23:05, the final build (held read with @settled, layouts inside the database with the identity checked from master, DBCC OPENTRAN (@dbid) from
+== master under the held lock), "shipped": every cycle reads the log, loads the layouts, asks OPENTRAN and the recovery fork. Fresh container per operation,
+== 4 databases at once, 4 readers each, --gap 2500 (without a gap no reader finishes a cycle: the "shipped" lines above have 0 reads, and so did a first run
+== of this one - they show nothing about reading).
+[1] shipped                      restore ok   21, refused                slowest 8,5 s; reads      743, errors 596x44 924x13 927x200 952x816 50005x259; alive; assertions 0
+[2] shipped                      restore ok   22, refused                slowest 6,3 s; reads      699, errors 596x59 924x4 927x230 952x1008 50005x161; alive; assertions 0
+[3] shipped                      restore ok   19, refused                slowest 8,7 s; reads      661, errors 596x41 924x24 927x233 952x768 50005x230; alive; assertions 0
+[4] shipped                      restore ok   19, refused                slowest 9,1 s; reads      843, errors 596x44 924x19 927x191 952x816 50005x190; alive; assertions 0
+    errorlog: assertions 0, non-yielding 0, restores 85, dumps 0
+[1] shipped                      offline ok   29, refused                slowest 3,5 s; reads      985, errors 596x67 942x69 952x1175; alive; assertions 0
+[2] shipped                      offline ok   29, refused                slowest 3,5 s; reads      980, errors 596x75 942x48 952x1207; alive; assertions 0
+[3] shipped                      offline ok   31, refused                slowest 3,5 s; reads      825, errors 596x74 942x51 952x1294; alive; assertions 0
+[4] shipped                      offline ok   30, refused                slowest 3,5 s; reads      893, errors 596x75 942x64 952x1226; alive; assertions 0
+    errorlog: assertions 0, non-yielding 0, restores 4, dumps 0
+[1] shipped                      reattach ok   24, refused                slowest 7,7 s; reads      959, errors 596x56 924x16 952x892 50003x8 50005x187; alive; assertions 0
+[2] shipped                      reattach ok   25, refused                slowest 7,9 s; reads      754, errors 596x50 924x7 952x1056 50003x2 50005x214; alive; assertions 0
+[3] shipped                      reattach ok   24, refused                slowest 9,3 s; reads      902, errors 596x53 924x9 952x1008 50003x5 50005x178; alive; assertions 0
+[4] shipped                      reattach ok   27, refused                slowest 4,4 s; reads      888, errors 596x66 924x6 952x1135 50003x9 50005x130; alive; assertions 0
+    errorlog: assertions 0, non-yielding 0, restores 4, dumps 0
