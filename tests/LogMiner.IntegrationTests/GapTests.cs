@@ -56,7 +56,8 @@ public class GapTests
         await using var conn = new SqlConnection(TestServer.ConnectionString());
         await conn.OpenAsync();
         var oldest = await ReplDoneClient.OldestUnreleasedAsync(conn, h.Capture.Database, CancellationToken.None);
-        Assert.Equal(new Lsn(cp.LastBeginLsn.Vlf, cp.LastBeginLsn.Block, 1), oldest); // all but the newest are released (the engine reports the log block)
+        // all but the newest are released. The engine reports a log block: its own, or that of a checkpoint which was running just before it
+        Assert.True(oldest > h.Capture.ReleasedThrough && oldest <= cp.LastBeginLsn, $"oldest {oldest}, released {h.Capture.ReleasedThrough}, held back {cp.LastBeginLsn}");
         Assert.Null(ReplDoneClient.Explain(oldest, cp));
         Assert.False(await TruncatePastAsync(h, cp.LastBeginLsn, rounds: 3));
     }

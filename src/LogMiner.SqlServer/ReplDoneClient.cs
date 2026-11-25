@@ -14,7 +14,8 @@ namespace LogMiner.SqlServer;
 /// </summary>
 public static class ReplDoneClient
 {
-    /// <summary>Begin LSN of the oldest replicated transaction that has not been released (null: none). Reads persistent state; does not
+    /// <summary>Begin LSN of the oldest replicated transaction that has not been released (null: none), or a little before: the engine reports a log
+    /// block, sometimes that of a checkpoint which ran just before the transaction began (measured). Never later. Reads persistent state; does not
     /// take the log reader role.</summary>
     public static async Task<Lsn?> OldestUnreleasedAsync(SqlConnection conn, DatabaseRef database, CancellationToken ct)
     {
