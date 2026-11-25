@@ -218,6 +218,22 @@ public sealed class DatabaseIdentityTests : IAsyncLifetime
         foreach (var (what, access) in Accesses(conn, await RefAsync(Name("a")), table).Where(a => a.What is not "release")) await access();
     }
 
+    /// <summary>Same id, same name, another history (restored in place): everything that is done to the database says so itself.</summary>
+    [Fact]
+    public async Task Another_history_under_the_same_id_and_name_is_noticed_by_every_access()
+    {
+        var database = await RefAsync(Name("a"));
+        await using var conn = new SqlConnection(TestServer.ConnectionString());
+        await conn.OpenAsync();
+        var table = (await SchemaLoader.LoadAsync(conn, database, CaptureScope.CdcTrackedTables, null, new HashSet<long>(), CancellationToken.None)).Tables.Single();
+        var before = database with { Incarnation = "0123456789ABCDEF0123456789ABCDEF" + database.Incarnation[32..] };
+        foreach (var (what, access) in Accesses(conn, before, table).Where(a => a.What is not ("recovery fork" or "historical load"))) // they ask, or go by name
+        {
+            var ex = await Record.ExceptionAsync(access);
+            Assert.True(ex is DatabaseChangedException or SqlException { Number: DatabaseIdentity.ChangedError }, $"{what}: {ex?.Message ?? "nothing noticed"}");
+        }
+    }
+
     /// <summary>Its one connection belongs to whoever is restoring, renaming or repairing it - also while that connection is not open.</summary>
     [Fact]
     public Task A_single_user_database_is_left_alone() =>

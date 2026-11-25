@@ -49,13 +49,26 @@ public class EventProperties
     public void Message_ids_are_equal_for_the_same_change_only(TestCase tc)
     {
         var a = DrawId(tc, "a");
-        var b = tc.Draw(Generators.Booleans(), "related") ? a with { Database = tc.Draw(Names, "other db") } : DrawId(tc, "b");
+        var other = DrawId(tc, "b");
+        var b = tc.Draw(Generators.Integers().Min(0).Max(7), "differs in") switch // mostly in one thing: that one must be in the id
+        {
+            0 => a with { Server = other.Server }, 1 => a with { Database = other.Database }, 2 or 3 => a with { Incarnation = other.Incarnation },
+            4 => a with { Commit = other.Commit }, 5 => a with { Sequence = other.Sequence }, 6 => a with { Read = other.Read }, _ => other,
+        };
         var (x, y) = (Message(a), Message(b));
         // the rows of one reading have no commit: their number tells them apart
         var same = a with { Commit = default } == b with { Commit = default } && (a.Commit == b.Commit || a.Read is not null);
         Assert.Equal(same, x.MessageId == y.MessageId);
         Assert.All(x.MessageId, c => Assert.InRange(c, '!', '~'));
         Assert.Equal(x.MessageId, Message(a).MessageId);
+    }
+
+    /// <summary>A load that is started again, or run twice, reads rows that may have changed since: they are other events.</summary>
+    [Fact]
+    public void Two_readings_of_a_table_have_ids_of_their_own()
+    {
+        var ids = Enumerable.Range(0, 100).Select(_ => new Capture.TableSnapshot(Table("db"), "load", 5).ReadId).ToList();
+        Assert.Equal(ids.Count, ids.Distinct().Count());
     }
 
     /// <summary>Reads a JSON string literal the way JSON defines it, also where it is not valid UTF-16 (System.Text.Json refuses to).</summary>

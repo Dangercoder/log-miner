@@ -93,6 +93,20 @@ public class SchemaEvolutionTests
     [Fact] public Task Widen_varchar() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(200) NULL;"), Dml2);
     [Fact] public Task Varchar_to_max_then_back() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(max) NULL;"), Dml2, Sql("ALTER TABLE dbo.t ALTER COLUMN s nvarchar(50) NULL;"), Dml3);
     [Fact] public Task Alter_twice() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN v bigint NULL;"), Dml2, Sql("ALTER TABLE dbo.t ALTER COLUMN v decimal(19,2) NULL;"), Dml3);
+    /// <summary>An altered column has another hbcolid than null bit; widening it is a change in place, logged by hbcolid.</summary>
+    [Fact]
+    public Task Alter_a_column_then_widen_it_in_place() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(40) COLLATE Cyrillic_General_CI_AS NULL;"), Dml2,
+        Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(60) COLLATE Cyrillic_General_CI_AS NULL;"), Dml3);
+
+    /// <summary>A column altered to a type of the same size keeps its null bit and gets another hbcolid, by which the flags that CDC sets on it are logged.</summary>
+    [Fact]
+    public Task Alter_to_a_type_of_the_same_size_then_CDC_off_and_on() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN v real NULL;"), Dml2,
+        Sql("EXEC sys.sp_cdc_disable_table @source_schema = N'dbo', @source_name = N't', @capture_instance = N'all';"),
+        Sql("EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N't', @role_name = NULL; " +
+            "IF EXISTS (SELECT 1 FROM msdb.dbo.cdc_jobs WHERE database_id = DB_ID() AND job_type = N'capture') EXEC sys.sp_cdc_drop_job N'capture'; " +
+            "IF EXISTS (SELECT 1 FROM msdb.dbo.cdc_jobs WHERE database_id = DB_ID() AND job_type = N'cleanup') EXEC sys.sp_cdc_drop_job N'cleanup';"),
+        Dml3);
+
     [Fact] public Task Alter_then_rebuild() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN v bigint NULL;"), Dml2, Sql("ALTER TABLE dbo.t REBUILD;"), Dml3);
     [Fact] public Task Collation_change() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(40) COLLATE Cyrillic_General_CI_AS NULL;"),
         h => h.DmlAsync("c", 8, "INSERT dbo.t (id, v, s) VALUES (8, 80, N'Привет');"), Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(40) COLLATE Greek_CI_AS NULL;"),

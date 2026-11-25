@@ -116,9 +116,10 @@ public class UnloggedChangeTests
         if (!ddl.StartsWith("DROP", StringComparison.Ordinal)) Assert.Equal(10, h.Events().Count(e => e.GetProperty("op").GetString() == "u" && e.GetProperty("after").GetProperty("v").GetInt32() == 2));
     }
 
-    /// <summary>A DDL transaction that was open before the bookmark's own and committed after it: its beginning is not in the log any more.</summary>
+    /// <summary>A DDL transaction that was open before the held-back one began and commits after it. SQL Server keeps its beginning in the log, too
+    /// (experiments/30): what was open then can always be read whole.</summary>
     [Fact]
-    public async Task A_DDL_transaction_whose_beginning_is_truncated_does_not_stop_the_stream()
+    public async Task A_DDL_transaction_that_overlaps_the_held_back_one_keeps_its_beginning_in_the_log()
     {
         await using var h = await CaptureHarness.CreateAsync(Ddl + "CREATE TABLE dbo.noise (id int IDENTITY PRIMARY KEY, pad char(4000) NOT NULL);", ["t", "p", "r"]);
         await h.SqlAsync("INSERT dbo.t VALUES (0, 'first');");
@@ -127,15 +128,24 @@ public class UnloggedChangeTests
         await other.OpenAsync();
         async Task OtherAsync(string sql) { await using var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, other); await cmd.ExecuteNonQueryAsync(); }
         await OtherAsync("BEGIN TRAN; CREATE TABLE dbo.x (a int);");
+        decimal began;
+        await using (var cmd = new Microsoft.Data.SqlClient.SqlCommand("SELECT database_transaction_begin_lsn FROM sys.dm_tran_database_transactions WHERE database_id = DB_ID() AND transaction_id = CURRENT_TRANSACTION_ID()", other)) began = (decimal)(await cmd.ExecuteScalarAsync())!;
         await h.SqlAsync("INSERT dbo.t VALUES (1, 'bookmark');");
         await h.PumpAllAsync();
         await h.CheckpointAsync(release: true);
         await OtherAsync("ALTER TABLE dbo.x ADD b int; COMMIT;");
-        for (var i = 0; i < 3; i++)
+        async Task<decimal> OldestAsync()
+        {
+            await using var cmd = new Microsoft.Data.SqlClient.SqlCommand("SELECT log_min_lsn FROM sys.dm_db_log_stats(DB_ID())", other);
+            var lsn = Lsn.Parse((string)(await cmd.ExecuteScalarAsync())!);
+            return lsn.Vlf * 1_000_000_000_000_000m + lsn.Block * 100_000m + lsn.Slot;
+        }
+        for (var i = 0; i < 6; i++)
         {
             await h.SqlAsync("INSERT dbo.noise (pad) SELECT TOP (1500) 'x' FROM sys.all_objects a CROSS JOIN sys.all_objects b; TRUNCATE TABLE dbo.noise; CHECKPOINT;");
             await TestServer.ExecAsync($"BACKUP LOG [{h.Db}] TO DISK = 'NUL';");
         }
+        Assert.True(await OldestAsync() <= began, "its beginning is gone");
         await h.SqlAsync("INSERT dbo.t VALUES (2, 'after');");
         await h.RestartAsync();
         await h.PumpAllAsync();

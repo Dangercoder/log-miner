@@ -25,6 +25,7 @@ public sealed class JetStreamSinkTests : IDisposable
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "lm-nats-" + Guid.NewGuid().ToString("N"));
     private readonly int _port = FreePort();
+    private readonly int _monitor = FreePort();
     private Process? _server;
 
     private static int FreePort()
@@ -39,7 +40,7 @@ public sealed class JetStreamSinkTests : IDisposable
     private async Task StartServerAsync()
     {
         Directory.CreateDirectory(_dir);
-        _server = Process.Start(new ProcessStartInfo(Exe!, $"-a 127.0.0.1 -p {_port} -js -sd \"{_dir}\"") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true })!;
+        _server = Process.Start(new ProcessStartInfo(Exe!, $"-a 127.0.0.1 -p {_port} -m {_monitor} -js -sd \"{_dir}\"") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true })!;
         _server.BeginErrorReadLine(); _server.BeginOutputReadLine();
         for (var i = 0; i < 200; i++)
         {
@@ -77,6 +78,27 @@ public sealed class JetStreamSinkTests : IDisposable
             try { await SendAsync(sink, messages); return; }
             catch (Exception) when (i < 200) { await Task.Delay(50); }
         }
+    }
+
+    /// <summary>Connections of sinks the server has now.</summary>
+    private async Task<int> SinkConnectionsAsync()
+    {
+        using var http = new HttpClient();
+        using var doc = System.Text.Json.JsonDocument.Parse(await http.GetStringAsync(new Uri($"http://127.0.0.1:{_monitor}/connz")));
+        return doc.RootElement.GetProperty("connections").EnumerateArray().Count(c => c.TryGetProperty("name", out var n) && n.GetString()!.StartsWith("logminer@", StringComparison.Ordinal));
+    }
+
+    private async Task<List<string>> HeadersAsync(string name)
+    {
+        await using var nats = new NatsConnection(new NatsOpts { Url = Url });
+        var stream = await new NatsJSContext(nats).GetStreamAsync("T");
+        var list = new List<string>();
+        for (var seq = stream.Info.State.FirstSeq; seq <= stream.Info.State.LastSeq; seq++)
+        {
+            var headers = Encoding.UTF8.GetString(Convert.FromBase64String((await stream.GetAsync(new StreamMsgGetRequest { Seq = seq })).Message.Hdrs!));
+            list.Add(headers.Split("\r\n").First(h => h.StartsWith(name + ": ", StringComparison.Ordinal))[(name.Length + 2)..]);
+        }
+        return list;
     }
 
     private async Task<List<(string Id, string Data)>> StoredAsync()
@@ -128,6 +150,8 @@ public sealed class JetStreamSinkTests : IDisposable
         Assert.Equal([("a", "a"), ("b", "fresh"), ("c", "fresh"), ("d", "d")], await StoredAsync());
         Assert.True(sink.Health.Healthy);
         Assert.True(sink.Connections >= 2);
+        await Task.Delay(3000); // a connection that was only left alone would have come back by itself, with whatever it still had to send
+        Assert.Equal(1, await SinkConnectionsAsync());
     }
 
     /// <summary>Anything may answer on the reply subject: only the stream's own acknowledgement counts, and nothing else does harm.</summary>
@@ -292,6 +316,7 @@ public sealed class JetStreamSinkTests : IDisposable
         }
         Assert.Equal(5, (await StoredAsync()).Count);
         Assert.Equal(0, sink.Duplicates);
+        Assert.Equal(["kund_å", "kund_ä", "%20kund", "kund", "kund%0Ax"], await HeadersAsync("lm-db"));
     }
 
     [Fact]

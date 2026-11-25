@@ -123,6 +123,38 @@ public class StreamIntegrityTests
         Assert.Equal(2, h.Events().Count());
     }
 
+    /// <summary>The oldest record is exact to the slot, a caught-up reader's position is the beginning of a block: in the block of the oldest
+    /// record nothing is missing that is needed.</summary>
+    [Fact]
+    public async Task A_position_in_the_block_of_the_oldest_record_is_still_in_the_log()
+    {
+        await using var h = await CaptureHarness.CreateAsync(Ddl, Tables);
+        await h.SqlAsync($"DECLARE @i int = 0; WHILE @i < 600 AND NOT EXISTS (SELECT 1 FROM sys.dm_database_encryption_keys WHERE database_id = DB_ID() AND encryption_state = 3) BEGIN WAITFOR DELAY '00:00:00.1'; SET @i += 1; END");
+        await h.SqlAsync("INSERT dbo.t VALUES (1, 'x')");
+        await h.PumpAllAsync();
+        await h.CheckpointAsync(release: true);
+        Assert.True(h.Capture.RequestFullRelease()); // nothing is held back: the log begins at a checkpoint, wherever that is in its block
+        await h.PumpAllAsync();
+        async Task<Lsn> OldestAsync()
+        {
+            await using var conn = new SqlConnection(TestServer.ConnectionString(h.Db));
+            await conn.OpenAsync();
+            await using var cmd = new SqlCommand("SELECT log_min_lsn FROM sys.dm_db_log_stats(DB_ID())", conn);
+            return Lsn.Parse((string)(await cmd.ExecuteScalarAsync())!);
+        }
+        var oldest = default(Lsn);
+        for (var i = 0; i < 40 && oldest.Slot <= 1; i++)
+        {
+            await h.CheckpointAsync(release: true);
+            await h.SqlAsync("BEGIN TRAN; INSERT dbo.noise (pad) VALUES ('z'); ROLLBACK; CHECKPOINT;"); // a rollback does not flush: the checkpoint begins behind it in the block
+            await TestServer.ExecAsync($"BACKUP LOG [{h.Db}] TO DISK = 'NUL';");
+            oldest = await OldestAsync();
+        }
+        Assert.True(oldest.Slot > 1, $"the premise: the log begins in the middle of a block ({oldest})");
+        Assert.Equal(oldest, (await ReadAsync(h, new Lsn(oldest.Vlf, oldest.Block, 1)))[0].Lsn);
+        await Assert.ThrowsAsync<LogTruncatedException>(() => ReadAsync(h, new Lsn(oldest.Vlf, oldest.Block - 1, 1)));
+    }
+
     /// <summary>A replicated transaction of which nothing is left has no events, but SQL Server holds its log until it is released.</summary>
     [Fact]
     public async Task A_transaction_of_which_nothing_is_left_is_released_too()

@@ -804,9 +804,13 @@ public class CapturePipelineProperties
 
         public void RestartTooLate(TestCase tc)
         {
+            // one that was open when the position was saved: reading again from the last commit does not reach back to its beginning, only its commit
+            // says what is missing
+            var open = tc.Draw(Generators.Booleans(), "open at the checkpoint") ? _db.LongTransaction() : null;
             for (var n = tc.Draw(Generators.Integers().Min(1).Max(3), "delivered"); n > 0; n--) _db.CommitNewInsert();
             while (PumpOnce()) { }
             Flush();
+            open?.Invoke(true);
             for (var n = tc.Draw(Generators.Integers().Min(1).Max(4), "transactions"); n > 0; n--) _db.NewTransaction(tc.Draw(Generators.Integers().Min(1).Max(5), "rows"), ddl: tc.Draw(Generators.Booleans(), "ddl"));
             var end = _db.LongTransaction();
             _db.CommitNewInsert();
