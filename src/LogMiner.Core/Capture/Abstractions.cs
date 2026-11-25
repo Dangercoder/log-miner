@@ -73,6 +73,8 @@ public enum LogContinuity
     NewTable,
     /// <summary>Rows came into or went out of a table by SWITCH: none of them is in the log.</summary>
     Switched,
+    /// <summary>A table has another name (or schema): its rows were published under the old one.</summary>
+    Renamed,
 }
 
 /// <summary>Captured changes may be missing: everything between two positions of a database's (or one table's) history.</summary>

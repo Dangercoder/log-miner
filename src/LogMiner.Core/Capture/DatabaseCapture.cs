@@ -27,7 +27,7 @@ public enum CaptureState { Idle, Running, Faulted }
 public sealed class DatabaseCapture
 {
     /// <summary>A committed transaction (or a snapshot chunk) whose events are built and not yet acknowledged.</summary>
-    private sealed record Ready(Lsn Begin, Lsn Commit, List<ChangeEvent> Events, bool IsSnapshot = false, Action? OnAcknowledged = null);
+    private sealed record Ready(Lsn Begin, Lsn Commit, List<ChangeEvent> Events, bool IsSnapshot = false, Action? OnAcknowledged = null, TableSnapshot? Marker = null);
     private sealed class UnknownRowsetException(long rowsetId, Lsn lsn) : Exception($"rowset {rowsetId} at {lsn}")
     {
         public long RowsetId { get; } = rowsetId;
@@ -614,6 +614,9 @@ public sealed class DatabaseCapture
                 await RecordGapAsync(new CaptureGap(Name, Incarnation, acknowledged, at, LogContinuity.Switched,
                     "rows came into or went out of the table by ALTER TABLE ... SWITCH; none of them is in the log", DateTimeOffset.UtcNow, $"{table.Schema}.{table.Table}"), ct);
             }
+            foreach (var (table, at, was) in schema.Renamed(previous, position))
+                await RecordGapAsync(new CaptureGap(Name, Incarnation, acknowledged, at, LogContinuity.Renamed, $"the table was called {was}: its rows, and changes from before, were published under that name", DateTimeOffset.UtcNow,
+                    $"{table.Schema}.{table.Table}"), ct);
             if (schema.History.Moves.Count > 0) _switchesThrough = Lsn.Max(_switchesThrough, schema.History.Moves.Max(m => m.At));
             foreach (var what in schema.Rewritten(previous)) _notices.Enqueue(what + ". Consumers have to follow the DDL, or load the table again: rows nobody wrote are not published.");
             foreach (var t in schema.NoLongerCaptured(previous)) _notices.Enqueue($"{t} is NOT captured any more (dropped, or CDC was disabled)");
@@ -701,6 +704,12 @@ public sealed class DatabaseCapture
         try
         {
             if (layout is null) throw new InvalidOperationException($"{s.Table} is no longer captured (dropped, or CDC disabled)");
+            // before the first chunk is read: what is committed while it is read comes behind the marker
+            if (!s.Begun)
+                lock (_gate)
+                    if (!_ready.Any(r => ReferenceEquals(r.Marker, s)))
+                        _ready.Add(new Ready(default, default, [new ChangeEvent { Table = layout, Op = ChangeOp.LoadBegin, Lsn = _lastLsn, CommitLsn = _lastLsn, Sequence = 0, SnapshotId = s.SnapshotId, SnapshotRead = s.AttemptId, Incarnation = Incarnation }],
+                            IsSnapshot: true, OnAcknowledged: () => s.Begun = true, Marker: s));
             chunk = await snapshots.ReadChunkAsync(layout, s.NextAfterKey, s.ChunkSize, ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -723,16 +732,19 @@ public sealed class DatabaseCapture
         var s = _snapshot!;
         if (s.MustReadAgain) { s.Start(null); return 0; }
         var high = s.Pending!.High;
-        var (chunkId, read) = (s.ChunkSeq, s.ReadId);
+        var read = s.ReadId;
         var (rows, lastKey, isLast) = s.Complete();
         var events = new List<ChangeEvent>(rows.Count);
         foreach (var row in rows)
             events.Add(new ChangeEvent
             {
                 Table = row.Layout, Op = ChangeOp.Read, After = row, Lsn = high, CommitLsn = high, Sequence = events.Count,
-                TransactionSize = rows.Count, SnapshotId = $"{s.SnapshotId}.{chunkId}", SnapshotRead = read, Incarnation = Incarnation,
+                TransactionSize = rows.Count, SnapshotId = s.SnapshotId, SnapshotRead = read, Incarnation = Incarnation,
             });
-        lock (_gate) _ready.Add(new Ready(high, high, events, IsSnapshot: true, OnAcknowledged: () => AcknowledgeChunk(s, lastKey, isLast, events.Count)));
+        var count = events.Count;
+        if (isLast)
+            events.Add(new ChangeEvent { Table = s.Table, Op = ChangeOp.LoadEnd, Lsn = high, CommitLsn = high, Sequence = 0, SnapshotId = s.SnapshotId, SnapshotRead = s.AttemptId, Incarnation = Incarnation, LoadRows = s.RowsEmitted + count });
+        lock (_gate) _ready.Add(new Ready(high, high, events, IsSnapshot: true, OnAcknowledged: () => AcknowledgeChunk(s, lastKey, isLast, count)));
         return events.Count;
     }
 

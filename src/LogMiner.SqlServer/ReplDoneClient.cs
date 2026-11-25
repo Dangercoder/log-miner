@@ -19,7 +19,8 @@ public static class ReplDoneClient
     /// take the log reader role.</summary>
     public static async Task<Lsn?> OldestUnreleasedAsync(SqlConnection conn, DatabaseRef database, CancellationToken ct)
     {
-        await using var cmd = Inside(conn, database, "DBCC OPENTRAN WITH TABLERESULTS, NO_INFOMSGS;");
+        await using var cmd = DatabaseIdentity.Held(conn, database, "DBCC OPENTRAN (@dbid) WITH TABLERESULTS, NO_INFOMSGS;"); // from master: one plan
+        cmd.CommandTimeout = 30;
         Lsn? oldest = null;
         try
         {

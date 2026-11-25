@@ -113,6 +113,14 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
             if (!await VerifyServerAsync(s, null, stoppingToken)) return false;
             _checkpoints = new FileCheckpointStore(s.State.File);
         }
+        var onGap = s.OnGap;
+        if (sqlState is null && onGap == GapPolicy.Resync)
+        {
+            onGap = GapPolicy.Continue; // there is nowhere to request it
+            log.LogWarning("positions are kept in a file, so a gap cannot request a historical load by itself (OnGap: Resync): load the tables again when one is reported");
+        }
+        if (s.Routing.PartitionKey != PartitionKeyMode.Database)
+            log.LogWarning("messages are in order per {Key} only: consumers cannot compare positions (commit_lsn, seq) of a whole database, and historical loads cannot be verified", s.Routing.PartitionKey);
         var encoder = new EventEncoder(new EncoderOptions { ServerName = s.ServerName, DestinationTemplate = s.Routing.DestinationTemplate, PartitionKey = s.Routing.PartitionKey });
         _signal = new DoorbellSignal(new DoorbellOptions
         {
@@ -129,7 +137,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         {
             ConnectionString = s.ConnectionString,
             Scope = s.Scope,
-            Settings = new CaptureSettings { StartPosition = s.StartPosition, MaxRowsPerRead = s.MaxRowsPerRead, MaxBufferedBytes = Math.Max(1, s.MaxBufferedMb) * 1024L * 1024, OnGap = s.OnGap },
+            Settings = new CaptureSettings { StartPosition = s.StartPosition, MaxRowsPerRead = s.MaxRowsPerRead, MaxBufferedBytes = Math.Max(1, s.MaxBufferedMb) * 1024L * 1024, OnGap = onGap },
             Gaps = gaps,
             MaxHeldLogMb = s.MaxHeldLogMb,
             Workers = s.Workers,
@@ -166,13 +174,13 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
     /// <summary>Ends the run, in bounded time. False: a part of it is still there.</summary>
     private async Task<bool> TearDownAsync()
     {
-        var ended = true;
+        var (ended, sinkEnded) = (true, true);
         // the engine first (it saves what was acknowledged); if it waits for the destination, the end of that releases it
         var engine = _engine is null ? Task.CompletedTask : Task.Run(async () => await _engine.DisposeAsync());
-        ended &= await EndsAsync(engine, TimeSpan.FromSeconds(10), "the capture engine", last: false);
-        if (_sink is not null) ended &= await EndsAsync(Task.Run(async () => await _sink.DisposeAsync()), TimeSpan.FromSeconds(10), "the sink", last: true);
+        await EndsAsync(engine, TimeSpan.FromSeconds(10), "the capture engine", last: false);
+        if (_sink is not null) sinkEnded = await EndsAsync(Task.Run(async () => await _sink.DisposeAsync()), TimeSpan.FromSeconds(10), "the sink", last: true);
         if (!engine.IsCompleted) ended = await EndsAsync(engine, TimeSpan.FromSeconds(5), "the capture engine", last: true);
-        else ended = true;
+        ended &= sinkEnded;
         switch (_checkpoints)
         {
             case IAsyncDisposable a: ended &= await EndsAsync(Task.Run(async () => await a.DisposeAsync()), TimeSpan.FromSeconds(5), "the state store", last: true); break;

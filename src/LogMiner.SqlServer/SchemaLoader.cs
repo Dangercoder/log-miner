@@ -50,17 +50,17 @@ public static class SchemaLoader
                OR (@objects <> N'' AND @objects LIKE N'%,' + CONVERT(nvarchar(20), t.object_id) + N',%')
                OR (@rowsets <> N'' AND t.is_replicated = 0 AND t.object_id IN (SELECT u.object_id FROM sys.partitions u WHERE @rowsets LIKE N'%,' + CONVERT(nvarchar(20), u.partition_id) + N',%')))
         ORDER BY p.partition_id, pc.partition_column_id
-        OPTION (MAXDOP 1);
+        OPTION (MAXDOP 1, RECOMPILE); -- 1.5 MB of plan that is needed once; 1,200 databases have it at every start
         SELECT SCHEMA_NAME(t.schema_id) + '.' + t.name FROM sys.tables t
         WHERE t.is_ms_shipped = 0 AND t.is_tracked_by_cdc = 0 AND SCHEMA_NAME(t.schema_id) <> 'cdc' AND @scope = 0
-        ORDER BY 1;
+        ORDER BY 1 OPTION (RECOMPILE);
         SELECT p.partition_id FROM sys.tables t JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0, 1)
-        WHERE t.is_tracked_by_cdc = 0 AND (t.is_replicated = 1 OR t.is_ms_shipped = 1) AND @scope = 0; -- their replicated records are transactional replication's
+        WHERE t.is_tracked_by_cdc = 0 AND (t.is_replicated = 1 OR t.is_ms_shipped = 1) AND @scope = 0 OPTION (RECOMPILE); -- their replicated records are transactional replication's
         IF OBJECT_ID(N'cdc.change_tables') IS NOT NULL SELECT source_object_id, start_lsn FROM cdc.change_tables WHERE start_lsn IS NOT NULL
         ELSE SELECT 0, CONVERT(binary(10), 0) WHERE 1 = 0;
         SELECT o.name, o.object_id, p.partition_id, au.allocation_unit_id
         FROM sys.all_objects o JOIN sys.partitions p ON p.object_id = o.object_id AND p.index_id = 1 JOIN sys.allocation_units au ON au.container_id = p.hobt_id AND au.type = 1
-        WHERE o.schema_id = 4 AND o.name IN (N'sysrscols', N'sysrowsets', N'syscolpars', N'sysschobjs', N'sysseobjvalues');
+        WHERE o.schema_id = 4 AND o.name IN (N'sysrscols', N'sysrowsets', N'syscolpars', N'sysschobjs', N'sysseobjvalues') OPTION (RECOMPILE);
         """;
 
     /// <summary>Only needed when the log does contain catalog changes: the layouts of the system tables themselves, and schema names.</summary>
@@ -70,9 +70,9 @@ public static class SchemaLoader
         FROM sys.partitions p JOIN sys.system_internals_partition_columns pc ON pc.partition_id = p.partition_id
         JOIN sys.all_columns c ON c.object_id = p.object_id AND c.column_id = pc.partition_column_id
         WHERE p.index_id = 1 AND p.object_id IN (SELECT o.object_id FROM sys.all_objects o WHERE o.schema_id = 4 AND o.name IN (N'sysrscols', N'sysrowsets', N'syscolpars', N'sysschobjs', N'sysseobjvalues'))
-        ORDER BY p.object_id, pc.partition_column_id;
-        SELECT schema_id, name FROM sys.schemas;
-        SELECT object_id FROM sys.tables WHERE is_ms_shipped = 0 AND is_replicated = 0;
+        ORDER BY p.object_id, pc.partition_column_id OPTION (RECOMPILE);
+        SELECT schema_id, name FROM sys.schemas OPTION (RECOMPILE);
+        SELECT object_id FROM sys.tables WHERE is_ms_shipped = 0 AND is_replicated = 0 OPTION (RECOMPILE);
         """;
 
     private sealed record Row(int ObjectId, string Schema, string Table, long RowsetId, DataCompression Compression, int IndexId, PhysicalColumn Physical, int ColumnId, string? Name,

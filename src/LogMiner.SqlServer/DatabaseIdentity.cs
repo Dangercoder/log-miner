@@ -35,9 +35,6 @@ public static class DatabaseIdentity
     /// <summary>Under the database's lock, in any database.</summary>
     private const string Check = "IF " + NotTheName + " OR NOT " + Fork + " THROW 50003, 'the database changed', 1; ";
 
-    /// <summary>The same in the database itself.</summary>
-    private const string CheckInside = "IF DB_ID() <> @dbid OR NOT " + Fork + " THROW 50003, 'the database changed', 1; ";
-
     private const string Enter =
         "SET DEADLOCK_PRIORITY LOW; SET LOCK_TIMEOUT 5000; " +
         "IF " + NotTheName + " THROW 50003, 'the database changed', 1; " +
@@ -68,11 +65,13 @@ public static class DatabaseIdentity
     internal const string Guard =
         "SET DEADLOCK_PRIORITY LOW; IF CONVERT(nvarchar(20), DATABASEPROPERTYEX(@db, 'UserAccess')) = N'SINGLE_USER' THROW 50005, 'the database is in single-user mode: the miner stays out of it', 1; ";
 
-    /// <summary>A statement in the database itself (catalog views, DBCC, sp_repldone): a plan per database, so not for what runs often.</summary>
+    /// <summary>A statement in the database itself (catalog views, sp_repldone): a plan per database, so not for what runs often, and large statements say
+    /// OPTION (RECOMPILE) (experiments/39). The identity is checked from master, with one plan.</summary>
     public static SqlCommand Inside(SqlConnection conn, DatabaseRef database, string statement, string declarations = "", string arguments = "")
     {
-        var cmd = new SqlCommand($"{Enter}EXEC @enter @q, N'{Parameters}{declarations}', @dbid, @fork, @dbname{arguments};", conn);
-        cmd.Parameters.Add(new SqlParameter("@q", System.Data.SqlDbType.NVarChar, -1) { Value = CheckInside + statement });
+        var cmd = new SqlCommand($"{Enter}EXEC @enter @q, N'@check nvarchar(max), {Parameters}{declarations}', @check, @dbid, @fork, @dbname{arguments};", conn);
+        cmd.Parameters.Add(new SqlParameter("@q", System.Data.SqlDbType.NVarChar, -1) { Value = $"EXEC master.sys.sp_executesql @check, N'{Parameters}', @dbid, @fork, @dbname; " + statement });
+        cmd.Parameters.Add(new SqlParameter("@check", System.Data.SqlDbType.NVarChar, -1) { Value = Check });
         AddParameters(cmd, database);
         return cmd;
     }

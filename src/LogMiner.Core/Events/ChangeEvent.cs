@@ -7,7 +7,15 @@ using LogMiner.Schema;
 
 namespace LogMiner.Events;
 
-public enum ChangeOp : byte { Create, Update, Delete, Read }
+public enum ChangeOp : byte
+{
+    Create, Update, Delete,
+    /// <summary>A row of a historical load.</summary>
+    Read,
+    /// <summary>Markers around the rows of a historical load. Every row of the table is published between them, or was changed by a transaction whose
+    /// events are: a consumer that knows of other rows at the end has rows the table does not have.</summary>
+    LoadBegin, LoadEnd,
+}
 
 /// <summary>One row change (or snapshot row) ready to publish.</summary>
 public sealed class ChangeEvent
@@ -30,6 +38,8 @@ public sealed class ChangeEvent
     /// <summary>Columns whose value was fetched from the table after the fact (off-row LOB / truncated / partial update).</summary>
     public IReadOnlyList<string>? LookedUp { get; init; }
     public string? SnapshotId { get; init; }
+    /// <summary>Rows of the load published (at its end).</summary>
+    public long LoadRows { get; init; }
     /// <summary>Database incarnation (recovery fork + creation time): LSNs are only comparable within one incarnation.</summary>
     public string Incarnation { get; init; } = "";
 
@@ -37,7 +47,7 @@ public sealed class ChangeEvent
     public ChangeEvent With(RowImage? before, RowImage? after) => new()
     {
         Table = Table, Op = Op, Before = before, After = after, Lsn = Lsn, CommitLsn = CommitLsn, BeginLsn = BeginLsn, CommitTime = CommitTime, TransactionId = TransactionId,
-        Sequence = Sequence, TransactionSize = TransactionSize, LookedUp = LookedUp, SnapshotId = SnapshotId, SnapshotRead = SnapshotRead, Incarnation = Incarnation,
+        Sequence = Sequence, TransactionSize = TransactionSize, LookedUp = LookedUp, SnapshotId = SnapshotId, SnapshotRead = SnapshotRead, Incarnation = Incarnation, LoadRows = LoadRows,
     };
 
     /// <summary>The reading of a chunk this row came from: every reading is different, also of a load that starts over after a restart (its
@@ -53,7 +63,7 @@ public sealed class ChangeEvent
         var source = $"{Uri.EscapeDataString(server)}:{Uri.EscapeDataString(Table.Database)}:{IncarnationId(Incarnation)}";
         return SnapshotId is null
             ? string.Create(CultureInfo.InvariantCulture, $"{source}:{CommitLsn}:{Sequence}")
-            : string.Create(CultureInfo.InvariantCulture, $"{source}:snap:{SnapshotRead}:{Sequence}");
+            : string.Create(CultureInfo.InvariantCulture, $"{source}:snap:{SnapshotRead}:{Op switch { ChangeOp.LoadBegin => "begin", ChangeOp.LoadEnd => "end", _ => Sequence.ToString(CultureInfo.InvariantCulture) }}");
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> IncarnationIds = new(StringComparer.Ordinal);
@@ -72,13 +82,21 @@ public static class ChangeEventJson
     {
         using var w = new Utf8JsonWriter(buffer, Options);
         w.WriteStartObject();
-        w.WriteString("op"u8, e.Op switch { ChangeOp.Create => "c", ChangeOp.Update => "u", ChangeOp.Delete => "d", _ => "r" });
+        w.WriteString("op"u8, e.Op switch { ChangeOp.Create => "c", ChangeOp.Update => "u", ChangeOp.Delete => "d", ChangeOp.Read => "r", _ => "l" });
         w.WritePropertyName("key"u8);
         WriteKey(w, e);
         w.WritePropertyName("before"u8);
         WriteImage(w, e.Before);
         w.WritePropertyName("after"u8);
         WriteImage(w, e.After);
+        if (e.Op is ChangeOp.LoadBegin or ChangeOp.LoadEnd)
+        {
+            w.WriteStartObject("load"u8);
+            w.WriteString("id"u8, e.SnapshotId);
+            w.WriteString("phase"u8, e.Op == ChangeOp.LoadBegin ? "begin" : "end");
+            if (e.Op == ChangeOp.LoadEnd) w.WriteNumber("rows"u8, e.LoadRows);
+            w.WriteEndObject();
+        }
         w.WriteStartObject("source"u8);
         w.WriteString("server"u8, server);
         w.WriteString("db"u8, e.Table.Database);
@@ -86,10 +104,11 @@ public static class ChangeEventJson
         w.WriteString("schema"u8, e.Table.Schema);
         w.WriteString("table"u8, e.Table.Table);
         w.WriteString("lsn"u8, e.Lsn.ToString());
-        w.WriteString("commit_lsn"u8, e.CommitLsn.ToString());
+        // rows of a load have no place in the commit order: a consumer's high-water mark is neither compared with them nor moved by them
+        if (e.SnapshotId is null) w.WriteString("commit_lsn"u8, e.CommitLsn.ToString());
         if (!e.BeginLsn.IsZero) w.WriteString("begin_lsn"u8, e.BeginLsn.ToString());
         if (e.TransactionId != 0) w.WriteString("xid"u8, Log.LogRecord.FormatTransactionId(e.TransactionId));
-        w.WriteNumber("seq"u8, e.Sequence);
+        if (e.SnapshotId is null) w.WriteNumber("seq"u8, e.Sequence);
         if (e.TransactionSize > 0) w.WriteNumber("txn_size"u8, e.TransactionSize);
         if (e.CommitTime is { } ct) w.WriteString("commit_time"u8, ct.ToString(ct.Kind == DateTimeKind.Utc ? "yyyy-MM-ddTHH:mm:ss.fffZ" : "yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture));
         if (e.SnapshotId is not null) w.WriteString("snapshot"u8, e.SnapshotId);

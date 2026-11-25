@@ -49,13 +49,9 @@ public sealed class EventEncoder(EncoderOptions options)
             MessageId = e.MessageId(Options.ServerName),
             Payload = buffer.WrittenMemory,
             ContentType = "application/json",
-            Headers =
-            [
-                new("lm-db", HeaderValue(e.Table.Database)),
-                new("lm-table", HeaderValue($"{e.Table.Schema}.{e.Table.Table}")),
-                new("lm-op", OpCode(e.Op)),
-                new("lm-commit-lsn", e.CommitLsn.ToString()),
-            ],
+            Headers = e.SnapshotId is null
+                ? [new("lm-db", HeaderValue(e.Table.Database)), new("lm-table", HeaderValue($"{e.Table.Schema}.{e.Table.Table}")), new("lm-op", OpCode(e.Op)), new("lm-commit-lsn", e.CommitLsn.ToString())]
+                : [new("lm-db", HeaderValue(e.Table.Database)), new("lm-table", HeaderValue($"{e.Table.Schema}.{e.Table.Table}")), new("lm-op", OpCode(e.Op))],
         };
     }
 
@@ -137,7 +133,7 @@ public sealed class EventEncoder(EncoderOptions options)
             : $"the destination template '{template}' may only contain {{server}}, {{db}}, {{schema}}, {{table}}, {{op}}, letters, digits, '_', '-' and '.'";
     }
 
-    public static string OpCode(ChangeOp op) => op switch { ChangeOp.Create => "c", ChangeOp.Update => "u", ChangeOp.Delete => "d", _ => "r" };
+    public static string OpCode(ChangeOp op) => op switch { ChangeOp.Create => "c", ChangeOp.Update => "u", ChangeOp.Delete => "d", ChangeOp.LoadBegin or ChangeOp.LoadEnd => "l", _ => "r" };
 
     /// <summary>Keeps [A-Za-z0-9_-]; anything else (dots, spaces, wildcards, non-ASCII) becomes '_'. Safe for NATS subjects and Kafka topics.</summary>
     public static string Token(string s)

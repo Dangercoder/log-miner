@@ -72,6 +72,10 @@ public sealed class TableSnapshot(TableLayout table, string snapshotId, int chun
     private readonly string _attempt = Guid.NewGuid().ToString("N")[..16];
     /// <summary>Unique to the pending chunk's reading, over restarts and other loads of the same table.</summary>
     internal string ReadId => $"{_attempt}.{_chunkSeq}";
+    /// <summary>Of this attempt's markers.</summary>
+    internal string AttemptId => _attempt;
+    /// <summary>The marker before its first row was acknowledged.</summary>
+    internal bool Begun { get; set; }
 
     /// <summary>Begins tracking a freshly read chunk; null discards a pending chunk (it is re-read after a fault).</summary>
     internal void Start(SnapshotChunk? chunk)

@@ -125,7 +125,51 @@ public static class CatalogHistory
                 history[rowset] = [new LayoutVersion(default, () => throw new CatalogHistoryException(ex.Message, ex))];
             }
         }
-        return new LayoutHistory(coversFrom, history, Moves(effective, formats[CatalogTable.Rowsets]));
+        return new LayoutHistory(coversFrom, history, Moves(effective, formats[CatalogTable.Rowsets]), Renames(now, effective, formats[CatalogTable.Objects]));
+    }
+
+    /// <summary>
+    /// Renames and schema transfers are changes in place to the table's row in sysschobjs, keyed by object id (experiments/38): of the schema's id, or
+    /// of the name, which is the row's only variable-length column (end offset and bytes, both in one piece). Undone from today's name backwards.
+    /// </summary>
+    private static List<TableRename> Renames(CatalogSnapshot now, List<Change> effective, TableLayout format)
+    {
+        var renames = new List<TableRename>();
+        var schemaAt = format.Visible.First(c => c.Name == "nsid").LeafOffset;
+        var fixedEnd = format.Columns.Where(c => c.LeafOffset >= 4).Max(c => c.LeafOffset + c.MaxInRowLength);
+        var nameAt = fixedEnd + 2 + (format.Columns.Count + 7) / 8 + 2; // behind the null bitmap and the number of variable columns
+        foreach (var changes in effective.Where(c => c.Table == CatalogTable.Objects && c.Operation == LogOperation.ModifyRow && c.Raw.Key is { Length: >= 5 })
+                     .GroupBy(c => BinaryPrimitives.ReadInt32LittleEndian(c.Raw.Key.AsSpan(1))))
+        {
+            if (!now.Objects.TryGetValue(changes.Key, out var table)) continue;
+            var schema = now.SchemaNames.Where(s => s.Value == table.Schema).Select(s => (int?)s.Key).FirstOrDefault();
+            var nsid = BitConverter.GetBytes(schema ?? -1);
+            var name = new List<byte>();
+            name.AddRange(BitConverter.GetBytes((ushort)(nameAt + 2 + 2 * table.Name.Length)));
+            name.AddRange(System.Text.Encoding.Unicode.GetBytes(table.Name));
+            foreach (var c in changes.OrderByDescending(c => c.Lsn))
+            {
+                var (at, before, after) = ((int)c.Raw.Offset, c.Raw.Row0 ?? [], c.Raw.Row1 ?? []);
+                var changed = false;
+                for (var i = 0; i < before.Length && at + i < schemaAt + 4; i++)
+                    if (at + i >= schemaAt && before.Length == after.Length) (nsid[at + i - schemaAt], changed) = (before[i], changed || before[i] != after[i]);
+                if (at >= nameAt)
+                {
+                    if (at - nameAt + after.Length > name.Count || !name.Skip(at - nameAt).Take(after.Length).SequenceEqual(after))
+                        throw new CatalogHistoryException($"object {changes.Key}: the name {table.Name} does not agree with the change at {c.Lsn}");
+                    name.RemoveRange(at - nameAt, after.Length);
+                    name.InsertRange(at - nameAt, before);
+                    changed = true;
+                }
+                if (!changed) continue;
+                var id = BitConverter.ToInt32(nsid);
+                var bytes = name.ToArray();
+                if (bytes.Length < 4 || BitConverter.ToUInt16(bytes) != nameAt + bytes.Length) throw new CatalogHistoryException($"object {changes.Key}: the name before the change at {c.Lsn} is not understood");
+                renames.Add(new TableRename(c.Lsn, changes.Key, now.SchemaNames.GetValueOrDefault(id) ?? table.Schema, System.Text.Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2)));
+            }
+        }
+        renames.Sort((a, b) => a.At.CompareTo(b.At));
+        return renames;
     }
 
     private static List<RowsetMove> Moves(List<Change> effective, TableLayout format)

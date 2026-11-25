@@ -26,14 +26,24 @@ public sealed class LayoutHistory
     /// <param name="coversFrom">Oldest LSN the history answers for.</param>
     /// <param name="rowsets">Versions per rowset in ascending <see cref="LayoutVersion.After"/> order; the first is valid from <paramref name="coversFrom"/>.</param>
     /// <param name="moves">Rowsets that changed hands within the covered range.</param>
-    public LayoutHistory(Lsn coversFrom, IReadOnlyDictionary<long, IReadOnlyList<LayoutVersion>> rowsets, IReadOnlyList<RowsetMove>? moves = null)
+    /// <param name="renames">Tables that were renamed or transferred within the covered range, oldest first.</param>
+    public LayoutHistory(Lsn coversFrom, IReadOnlyDictionary<long, IReadOnlyList<LayoutVersion>> rowsets, IReadOnlyList<RowsetMove>? moves = null, IReadOnlyList<TableRename>? renames = null)
     {
+        Renames = renames ?? [];
         CoversFrom = coversFrom;
         _rowsets = rowsets;
         Moves = moves ?? [];
     }
 
     public IReadOnlyList<RowsetMove> Moves { get; }
+    public IReadOnlyList<TableRename> Renames { get; }
+
+    /// <summary>The table's name for a record at <paramref name="lsn"/>, or null when it has been the same ever since.</summary>
+    public (string Schema, string Table)? NameAt(int objectId, Lsn lsn)
+    {
+        foreach (var r in Renames) if (r.ObjectId == objectId && lsn < r.At) return (r.Schema, r.Table);
+        return null;
+    }
 
     /// <summary>The layouts valid at <see cref="CoversFrom"/> of rowsets that changed since.</summary>
     public IEnumerable<TableLayout> Earliest()
@@ -68,6 +78,9 @@ public sealed class LayoutHistory
 
 /// <summary>ALTER TABLE ... SWITCH: a rowset with all its rows went from one table to another, without a record of any row.
 /// <see cref="From"/> and <see cref="To"/> are object ids, 0 when the log does not say.</summary>
+/// <summary>A table was called <see cref="Schema"/>.<see cref="Table"/> before the change at <see cref="At"/>.</summary>
+public sealed record TableRename(Lsn At, int ObjectId, string Schema, string Table);
+
 public sealed record RowsetMove(Lsn At, long Rowset, int From, int To);
 
 /// <summary>The catalog and the log do not fit together: a DDL raced with the catalog read (retry) or the engine logs its catalog in a

@@ -48,7 +48,28 @@ public sealed class DatabaseSchema
     {
         if (lsn < History.CoversFrom)
             throw new CatalogHistoryException($"{Database}: layouts were loaded for the log from {History.CoversFrom}, asked for {lsn}");
-        return History.TryFind(rowsetId, lsn, out var layout) ? layout : _byRowset.GetValueOrDefault(rowsetId);
+        if (!History.TryFind(rowsetId, lsn, out var layout)) layout = _byRowset.GetValueOrDefault(rowsetId);
+        // under the name the table had when the change was made
+        if (layout is null || History.Renames.Count == 0 || History.NameAt(layout.ObjectId, lsn) is not { } name || name == (layout.Schema, layout.Table)) return layout;
+        if (!_renamed.TryGetValue((layout, name.Schema, name.Table), out var renamed))
+            _renamed[(layout, name.Schema, name.Table)] = renamed = new TableLayout(layout.DatabaseId, layout.Database, layout.ObjectId, name.Schema, name.Table, layout.PartitionId, layout.Compression, layout.Columns);
+        return renamed;
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(TableLayout, string, string), TableLayout> _renamed = new();
+
+    /// <summary>Captured tables that are called something else now than before (by the layouts known then, or after a restart by the log behind
+    /// <paramref name="position"/>).</summary>
+    public IEnumerable<(TableLayout Table, Lsn At, string Was)> Renamed(DatabaseSchema? previous, Lsn position)
+    {
+        foreach (var t in Tables.DistinctBy(t => t.ObjectId))
+        {
+            if (previous is not null)
+            {
+                if (previous.FindTable(t.ObjectId) is { } was && (was.Schema, was.Table) != (t.Schema, t.Table)) yield return (t, AsOf, $"{was.Schema}.{was.Table}");
+            }
+            else if (History.Renames.FirstOrDefault(r => r.ObjectId == t.ObjectId && r.At > position) is { } r && (r.Schema, r.Table) != (t.Schema, t.Table)) yield return (t, r.At, $"{r.Schema}.{r.Table}");
+        }
     }
 
     /// <summary>Current layout of a captured table (any partition), or null when it is not captured.</summary>

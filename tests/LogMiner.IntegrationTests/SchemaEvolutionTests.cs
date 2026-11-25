@@ -93,6 +93,57 @@ public class SchemaEvolutionTests
     [Fact] public Task Widen_varchar() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(200) NULL;"), Dml2);
     [Fact] public Task Varchar_to_max_then_back() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(max) NULL;"), Dml2, Sql("ALTER TABLE dbo.t ALTER COLUMN s nvarchar(50) NULL;"), Dml3);
     [Fact] public Task Alter_twice() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN v bigint NULL;"), Dml2, Sql("ALTER TABLE dbo.t ALTER COLUMN v decimal(19,2) NULL;"), Dml3);
+    /// <summary>Every change comes under the name its table had when it was made, whether the miner was there or not, and consumers are told that the
+    /// rows under the new name are others. (Found by a review: until a restart they came under the old name.)</summary>
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task Renamed_and_swapped_tables(bool live, bool inOneTransaction)
+    {
+        await using var h = await CaptureHarness.CreateAsync("CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NULL); CREATE TABLE dbo.t_new (id int NOT NULL PRIMARY KEY, v int NULL); CREATE TABLE dbo.other (id int NOT NULL PRIMARY KEY);", ["t", "t_new", "other"]);
+        var expected = new List<(int Id, string Table)>();
+        async Task InsertAsync(string table, int id)
+        {
+            await h.SqlAsync($"INSERT {table} (id) VALUES ({id});");
+            expected.Add((id, table));
+            if (live) await h.PumpAllAsync();
+        }
+        await h.SqlAsync("CREATE SCHEMA archive;");
+        await InsertAsync("dbo.t", 1);
+        await InsertAsync("dbo.t_new", 2);
+        await h.PumpAllAsync();
+        await h.CheckpointAsync(release: true);
+        await InsertAsync("dbo.t", 3);
+        var swap = "EXEC sp_rename 'dbo.t', 't_old_with_a_long_name'; EXEC sp_rename 'dbo.t_new', 't';";
+        await h.SqlAsync(inOneTransaction ? $"BEGIN TRAN; {swap} COMMIT;" : swap);
+        await InsertAsync("dbo.t", 4);                      // was t_new
+        await InsertAsync("dbo.t_old_with_a_long_name", 5); // was t
+        await h.SqlAsync("EXEC sp_rename 'dbo.t_old_with_a_long_name', 't_odd_with_a_long_name';"); // one character in the middle
+        await InsertAsync("dbo.t_odd_with_a_long_name", 6);
+        await h.SqlAsync("BEGIN TRAN; EXEC sp_rename 'dbo.t', 'never'; ROLLBACK;");
+        await InsertAsync("dbo.t", 7);
+        await h.SqlAsync("ALTER SCHEMA archive TRANSFER dbo.t_odd_with_a_long_name;");
+        await InsertAsync("archive.t_odd_with_a_long_name", 8);
+        await h.SqlAsync("EXEC sp_rename 'archive.t_odd_with_a_long_name', 'x';");
+        await InsertAsync("archive.x", 9);
+        await InsertAsync("dbo.other", 10);
+        if (!live) await h.RestartAsync();
+        await h.PumpAllAsync();
+        Assert.Equal(expected, h.Events().Select(e => (e.GetProperty("after").GetProperty("id").GetInt32(), $"{e.GetProperty("source").GetProperty("schema").GetString()}.{e.GetProperty("source").GetProperty("table").GetString()}")).OrderBy(e => e.Item1));
+        Assert.All(h.Gaps, g => Assert.Equal(LogMiner.Capture.LogContinuity.Renamed, g.Continuity));
+        Assert.Contains("dbo.t", h.Gaps.Select(g => g.Table));
+        Assert.Contains("archive.x", h.Gaps.Select(g => g.Table));
+        Assert.DoesNotContain("dbo.other", h.Gaps.Select(g => g.Table));
+        // and once told, never again
+        var told = h.Gaps.Count;
+        await h.CheckpointAsync(release: true);
+        await h.RestartAsync();
+        await InsertAsync("dbo.other", 11);
+        await h.PumpAllAsync();
+        Assert.Equal(told, h.Gaps.Count);
+    }
+
     /// <summary>An altered column has another hbcolid than null bit; widening it is a change in place, logged by hbcolid.</summary>
     [Fact]
     public Task Alter_a_column_then_widen_it_in_place() => BothAsync(Dml1, Sql("ALTER TABLE dbo.t ALTER COLUMN s varchar(40) COLLATE Cyrillic_General_CI_AS NULL;"), Dml2,

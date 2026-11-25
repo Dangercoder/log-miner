@@ -1133,7 +1133,7 @@ public class CapturePipelineProperties
                 if (!seen.Add(m.MessageId)) continue;
                 using var doc = JsonDocument.Parse(m.Payload);
                 var root = doc.RootElement;
-                if (root.GetProperty("op").GetString() == "r") continue; // snapshot rows are checked by the replica comparison
+                if (root.GetProperty("op").GetString() is "r" or "l") continue; // snapshot rows are checked by the replica comparison
                 var src = root.GetProperty("source");
                 int? V(string image) => root.GetProperty(image).ValueKind == JsonValueKind.Null ? null : root.GetProperty(image).GetProperty("v").GetInt32();
                 var id = (root.GetProperty("after").ValueKind != JsonValueKind.Null ? root.GetProperty("after") : root.GetProperty("before")).GetProperty("id").GetInt32();
@@ -1217,6 +1217,7 @@ public class CapturePipelineProperties
                 using var doc = JsonDocument.Parse(m.Payload);
                 var root = doc.RootElement;
                 var op = root.GetProperty("op").GetString();
+                if (op == "l") continue;
                 var image = root.GetProperty(op == "d" ? "before" : "after");
                 var id = image.GetProperty("id").GetInt32();
                 if (op == "d") replica.Remove(id); else replica[id] = image.GetProperty("v").GetInt32();
