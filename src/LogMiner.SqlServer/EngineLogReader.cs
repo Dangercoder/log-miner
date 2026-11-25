@@ -45,7 +45,8 @@ public sealed class EngineLogReader(SqlConnection connection)
         FROM sys.fn_full_dblog('0x' + @start, NULL, @dbid, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         CROSS APPLY (SELECT CASE WHEN [Current LSN] >= @end THEN 0 WHEN (CONVERT(int, [Flag Bits]) & 5) <> 0 OR Operation IN (N'LOP_COMMIT_XACT', N'LOP_ABORT_XACT') THEN 1 ELSE 0 END) k(keep)
         CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' ELSE N'LOP_PROGRESS' END) m(keep, op)
-        WHERE m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start -- one progress marker per log block: the scan position always advances
+        -- one progress marker per log block: the scan position always advances. Of what is not on disk: whether there is a captured change among it.
+        WHERE m.keep = 1 OR ([Current LSN] < @end AND ([Current LSN] LIKE N'%:0001' OR [Current LSN] = @start)) OR ([Current LSN] >= @end AND CONVERT(int, [Flag Bits]) & 4 = 4)
         OPTION (MAXDOP 1) /*logminer-read*/;
         """;
 
@@ -62,7 +63,7 @@ public sealed class EngineLogReader(SqlConnection connection)
                                        AND Operation IN (N'LOP_INSERT_ROWS', N'LOP_DELETE_ROWS', N'LOP_MODIFY_ROW', N'LOP_MODIFY_COLUMNS'))
                             THEN 1 ELSE 0 END * CASE WHEN [Current LSN] >= @end THEN 0 ELSE 1 END) k(keep)
         CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' ELSE N'LOP_PROGRESS' END) m(keep, op)
-        WHERE m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start
+        WHERE m.keep = 1 OR ([Current LSN] < @end AND ([Current LSN] LIKE N'%:0001' OR [Current LSN] = @start)) OR ([Current LSN] >= @end AND Operation = N'LOP_COMMIT_XACT')
         OPTION (MAXDOP 1) /*logminer-read*/;
         """;
 
@@ -70,7 +71,7 @@ public sealed class EngineLogReader(SqlConnection connection)
 
     public SqlConnection Connection { get; } = connection;
 
-    /// <summary>The read that has ended ended before log that is not on disk yet.</summary>
+    /// <summary>The read that has ended ended before log that is not on disk yet and has captured changes in it.</summary>
     public bool Unhardened { get; private set; }
 
     /// <summary>With the zone's rules at that time (a backlog may reach back over a clock change). In the hour that occurs twice, the second.</summary>

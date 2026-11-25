@@ -409,5 +409,8 @@ issuing the insert to the consumer receiving the event from JetStream.
 * A stream that stops with `UndecodableChangeException` (a layout that cannot be derived) keeps its log. To give up the undecodable part:
   stop the service, `EXEC sp_repldone NULL, NULL, 0, 0, 1; EXEC sp_replflush` in that database, delete its row in `logminer.dbo.checkpoints`,
   start the service, request a historical load.
-* JetStream: R1 + default `sync_interval` can lose acknowledged messages on a NATS host power loss — use
-  `sync_interval: always` or R3 for "never lose".
+* JetStream: R1 loses on a NATS host power loss what was acknowledged since the last sync. `sync_interval: always` is not the answer: *measured*
+  p50 6.5 s at 200 events/s (every message is synced on its own), `100ms` +0.8 ms, `1s` nothing measurable. Instead a change stays in SQL
+  Server's log for `ReleaseIntervalMs` (10 s) after its checkpoint, however many follow, so with a shorter `sync_interval` what NATS lost is
+  still there. **Publishing it again is not automatic**: the audit before every release notices that the stream lost messages, stops releasing
+  and says so; the position then has to be set back by hand. R3 (three hosts) has no such window.

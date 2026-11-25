@@ -53,7 +53,8 @@ Run two instances (two hosts) for HA, with the same `ServerName`: one holds the 
 
 Exit codes: 2 configuration, 4 the self-test failed, 5 a previous run did not come to an end.
 
-On the NATS server use `sync_interval: always` (or R3): with the default, acknowledged messages are lost when its host loses power.
+On the NATS server set `sync_interval` well below `ReleaseIntervalMs` (`1s`; the default of 2m is too long) or use R3: what was acknowledged
+since the last sync is lost when its host loses power, and SQL Server's log has it for `ReleaseIntervalMs` only.
 
 ## Verify a SQL Server build
 

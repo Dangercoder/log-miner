@@ -120,6 +120,15 @@ public class CapturePipelineProperties
         Assert.Equal(releasedByOthers, m.Gaps > 0);
     }
 
+    /// <summary>An acknowledgement may come before the destination has the event on disk. SQL Server keeps every change for at least the release
+    /// interval after its checkpoint, however many follow.</summary>
+    [Fact]
+    public void Log_is_released_no_sooner_than_the_release_interval()
+    {
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0);
+        m.ReleaseWaits(TimeSpan.FromMilliseconds(400));
+    }
+
     /// <summary>A transaction that cannot be decoded stops the stream. What committed before it still goes out; it and everything behind it waits,
     /// however often it is tried again and whatever is checkpointed meanwhile - and comes out once it can be decoded.</summary>
     [HegelTest(TestCases = 60)]
@@ -909,6 +918,38 @@ public class CapturePipelineProperties
             _db.UntrackedTransaction();
             _db.Truncate();
             _db.CommitNewInsert();
+        }
+
+        public void ReleaseWaits(TimeSpan interval)
+        {
+            var durable = new List<(Lsn Commit, DateTime At)>();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var releases = 0;
+            var last = default(Lsn);
+            while (sw.Elapsed < 6 * interval)
+            {
+                _db.CommitNewInsert();
+                PumpOnce();
+                Sync(() => CheckpointCoordinator.SaveAsync([_capture], _store, CancellationToken.None));
+                durable.Add((_capture.Durable!.LastCommitLsn, DateTime.UtcNow));
+                Sync(() => CheckpointCoordinator.ReleaseAsync([_capture], _db, interval, null, CancellationToken.None));
+                if (_db.ReleasedThrough != last)
+                {
+                    last = _db.ReleasedThrough;
+                    releases++;
+                    var age = DateTime.UtcNow - durable.First(d => d.Commit >= last).At;
+                    Assert.True(age >= interval, $"released {age.TotalMilliseconds:F0} ms after its checkpoint");
+                }
+                Thread.Sleep(5);
+            }
+            Assert.True(releases >= 3, $"{releases} releases"); // it does not wait for ever either, while changes keep coming
+            var newest = _capture.Releasable!.Value.Commit;
+            for (var i = 0; i < 3; i++)
+            {
+                Thread.Sleep(interval + TimeSpan.FromMilliseconds(20));
+                Sync(() => CheckpointCoordinator.ReleaseAsync([_capture], _db, interval, null, CancellationToken.None));
+            }
+            Assert.Equal(newest, _db.ReleasedThrough); // nor when none come any more
         }
 
         public void RestartBehindALongTransaction(int pumps)

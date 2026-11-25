@@ -21,6 +21,8 @@ public sealed class LogMinerSettings
     /// <summary>Row images of uncommitted transactions buffered per database; a transaction that needs more stops its database's stream.</summary>
     public int MaxBufferedMb { get; set; } = 1024;
     public int CheckpointIntervalMs { get; set; } = 1000;
+    /// <remarks>Also how long SQL Server keeps a change after its checkpoint: longer than the sink may take to have an acknowledged event on disk
+    /// (JetStream's sync_interval).</remarks>
     public int ReleaseIntervalMs { get; set; } = 10_000;
     public bool ReleaseLog { get; set; } = true;
     /// <summary>Verification of this SQL Server build in a scratch database, once per server version and miner build (see LogMiner.SqlServer.SelfTest).</summary>

@@ -186,6 +186,8 @@ public sealed class DatabaseCapture
     public bool HoldingForBaseline { get { lock (_gate) return _durable is null && _baseline is not null; } }
     public Lsn ReleasedThrough { get; internal set; }
     public DateTimeOffset ReleasedAt { get; internal set; }
+    /// <summary>What was releasable when it was last looked at: released at the next look.</summary>
+    internal (Lsn Begin, Lsn Commit)? ReleaseNext { get; set; }
     /// <summary>Transaction up to which the log may be released: acknowledged, behind a durable checkpoint, and (normally) not the newest.</summary>
     public (Lsn Begin, Lsn Commit)? Releasable { get { lock (_gate) return Superseded ? null : _releasable; } }
     /// <summary>Gaps detected since the capture started (each is recorded durably before the stream goes on).</summary>
@@ -773,7 +775,11 @@ public static class CheckpointCoordinator
         }
     }
 
-    /// <summary>Strictly behind what <see cref="SaveAsync"/> made durable.</summary>
+    /// <summary>
+    /// Strictly behind what <see cref="SaveAsync"/> made durable, and not before it has been that for <paramref name="releaseInterval"/>: an
+    /// acknowledgement may mean no more than that the destination has the event in memory (JetStream between two syncs). What it loses when its
+    /// host loses power is then still in SQL Server's log.
+    /// </summary>
     public static async Task ReleaseAsync(IReadOnlyCollection<DatabaseCapture> captures, ILogReleaser releaser, TimeSpan releaseInterval,
         Action<DatabaseCapture, Exception>? onReleaseError, CancellationToken ct)
     {
@@ -782,6 +788,14 @@ public static class CheckpointCoordinator
         {
             if (c.ReleasedByOthers || c.Releasable is not { } target || target.Commit <= c.ReleasedThrough) continue;
             if (now - c.ReleasedAt < releaseInterval) continue;
+            if (releaseInterval > TimeSpan.Zero)
+            {
+                var aged = c.ReleaseNext;
+                c.ReleaseNext = target;
+                c.ReleasedAt = now;
+                if (aged is not { } due || due.Commit > target.Commit || due.Commit <= c.ReleasedThrough) continue;
+                target = due;
+            }
             try
             {
                 await releaser.ReleaseAsync(c.Database, target.Begin, target.Commit, ct);
