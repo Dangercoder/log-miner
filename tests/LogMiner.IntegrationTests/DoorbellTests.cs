@@ -296,6 +296,24 @@ public sealed class DoorbellTests : IAsyncLifetime
         await w.BellAsync(_dbId, since, 500);
     }
 
+    /// <summary>The stream has no end: what goes wrong while it is read must not be followed by an attempt to read the rest of it.</summary>
+    [Fact]
+    public async Task What_goes_wrong_while_the_stream_is_read_ends_it()
+    {
+        var stream = new LogFlushStream(TestServer.ConnectionString(), NewSession(), TimeSpan.FromMilliseconds(4));
+        using var stop = new CancellationTokenSource();
+        var running = stream.RunAsync(() => { }, _ => throw new InvalidDataException("not understood"), stop.Token);
+        using var writing = new CancellationTokenSource();
+        var writer = Task.Run(async () => { while (!writing.IsCancellationRequested) { await InsertAsync(Interlocked.Increment(ref _nextId)); } });
+        var first = await Task.WhenAny(running, Task.Delay(10_000));
+        await writing.CancelAsync();
+        await writer;
+        var ended = first == running;
+        await stop.CancelAsync();
+        Assert.True(ended, "still reading 10 s after the error");
+        await Assert.ThrowsAsync<InvalidDataException>(() => running);
+    }
+
     /// <summary>Nothing in the engine may have to wait for the miner: a live stream that is attached but never read loses events, not time.</summary>
     [Fact]
     public async Task A_miner_that_stops_reading_does_not_hold_up_the_writers()
@@ -342,6 +360,7 @@ public sealed class DoorbellTests : IAsyncLifetime
             });
             var blocked = await RateAsync(6);
             await stop.CancelAsync();
+            cmd.Cancel(); // closing it first would read the stream to its end, and it has none
             stuck.Close();
             await dispatch;
             Assert.True(blocked > alone * 0.5, $"writers: {alone:F0}/s alone, {blocked:F0}/s with a stuck reader");
@@ -402,6 +421,51 @@ public sealed class DoorbellTests : IAsyncLifetime
         var settled = engine.BellRetries;
         await Task.Delay(300);
         Assert.Equal(settled, engine.BellRetries);
+    }
+
+    /// <summary>The poll sees a write when it is issued, and only what is on disk is read: the read then comes too early, and there is no second bell.</summary>
+    [Fact]
+    public async Task A_write_that_is_noticed_before_it_is_on_disk_is_read_as_soon_as_it_is()
+    {
+        var signal = new ScriptedSignal();
+        var sink = new MemorySink();
+        await using var engine = Engine(signal, sink, 1);
+        await engine.StartAsync(CancellationToken.None);
+        await InsertAsync(1);
+        await signal.Bells.Writer.WriteAsync(new LogActivity(_dbId, default));
+        for (var i = 0; i < 100 && sink.Snapshot().Count < 1; i++) await Task.Delay(20);
+        Assert.Single(sink.Snapshot());
+        for (var round = 1; round <= 3; round++)
+        {
+            await Task.Delay(500); // checkpoint writes settle
+            await using var freezer = new SqlConnection(TestServer.ConnectionString() + ";Pooling=false");
+            await freezer.OpenAsync();
+            await using (var cmd = new SqlCommand($"ALTER DATABASE [{_db}] SET SUSPEND_FOR_SNAPSHOT_BACKUP = ON", freezer)) await cmd.ExecuteNonQueryAsync();
+            Task insert;
+            try
+            {
+                insert = InsertAsync(10 + round);
+                await Task.Delay(300);
+                Assert.False(insert.IsCompleted);
+                await signal.Bells.Writer.WriteAsync(new LogActivity(_dbId, default)); // bytes were written: which block, the poll does not know
+                await Task.Delay(round == 3 ? 3000 : 200);                             // ... a disk that takes its time
+                Assert.Equal(round, sink.Snapshot().Count);
+            }
+            finally { await using var cmd = new SqlCommand($"ALTER DATABASE [{_db}] SET SUSPEND_FOR_SNAPSHOT_BACKUP = OFF", freezer); await cmd.ExecuteNonQueryAsync(); }
+            await insert;
+            var sw = Stopwatch.StartNew();
+            while (sink.Snapshot().Count < 1 + round && sw.ElapsedMilliseconds < 1500) await Task.Delay(5);
+            Assert.Equal(1 + round, sink.Snapshot().Count);
+        }
+        // it does not go on for ever (a record that nothing flushes may stay in memory)
+        long settled = -1;
+        for (var i = 0; i < 30 && settled != engine.BellRetries; i++)
+        {
+            settled = engine.BellRetries;
+            await Task.Delay(600);
+        }
+        Assert.Equal(settled, engine.BellRetries);
+        Assert.True(settled < 3 * 41, $"{settled} retries");
     }
 
     /// <summary>

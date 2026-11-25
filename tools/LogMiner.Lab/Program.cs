@@ -13,8 +13,8 @@ namespace LogMiner.Lab;
 internal static partial class Program
 {
     internal static string ConnectionString(string db = "master") =>
-        Environment.GetEnvironmentVariable("LOGMINER_LAB_CS")
-        ?? $"Data Source=localhost;Initial Catalog={db};Integrated Security=true;TrustServerCertificate=true;Application Name=logminer-lab";
+        Environment.GetEnvironmentVariable("LOGMINER_LAB_CS") is { Length: > 0 } other ? new SqlConnectionStringBuilder(other) { InitialCatalog = db, ApplicationName = "logminer-lab" }.ConnectionString
+        : $"Data Source=localhost;Initial Catalog={db};Integrated Security=true;TrustServerCertificate=true;Application Name=logminer-lab";
 
     private static async Task<int> Main(string[] args)
     {

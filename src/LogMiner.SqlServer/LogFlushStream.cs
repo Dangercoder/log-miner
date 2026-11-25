@@ -58,23 +58,31 @@ internal sealed partial class LogFlushStream(string connectionString, string ses
 
     private static async Task ReadAsync(SqlCommand cmd, LogFlushDecoder decoder, Action attached, Action<List<LogFlush>> flushed, CancellationToken ct)
     {
-        await using var r = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
-        var flushes = new List<LogFlush>();
-        var ready = false;
-        while (await r.ReadAsync(ct))
+        var r = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+        try
         {
-            flushes.Clear();
-            var type = r.GetInt32(0);
-            decoder.Decode(type, r.GetFieldValue<byte[]>(1), flushes);
-            if (!ready && decoder.Ready)
+            var flushes = new List<LogFlush>();
+            var ready = false;
+            while (await r.ReadAsync(ct))
             {
-                ready = true;
-                attached();
+                flushes.Clear();
+                var type = r.GetInt32(0);
+                decoder.Decode(type, r.GetFieldValue<byte[]>(1), flushes);
+                if (!ready && decoder.Ready)
+                {
+                    ready = true;
+                    attached();
+                }
+                if (flushes.Count > 0) flushed(flushes);
             }
-            if (flushes.Count > 0) flushed(flushes);
+            ct.ThrowIfCancellationRequested();
+            throw new IOException("the live event stream ended");
         }
-        ct.ThrowIfCancellationRequested();
-        throw new IOException("the live event stream ended");
+        finally
+        {
+            cmd.Cancel(); // closing a reader reads what is left of it, and this one has no end
+            await r.DisposeAsync();
+        }
     }
 
     private async Task DispatchAsync(SqlConnection conn, byte[] address, CancellationToken ct)

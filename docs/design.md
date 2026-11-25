@@ -41,9 +41,28 @@ reported loudly** (schema load lists them; engine warns; health counts them) —
 * **The database is identified with every read.** The log is read by id, the catalog and `sp_repldone` go by name, and both move: a dropped or
   detached database's id is taken by the next one at once, names are swapped, a restore puts another history in the same place. Databases made
   from one backup have the same LSNs and rowset ids, so a mix-up would not show (before this, swapping two tenants' names published each
-  one's rows as the other's). Id, name and recovery fork are checked before and after the rows (~5 µs, `experiments/27`), and inside the
-  database, under its shared lock, for everything that goes by name. A database that changed ends its capture; whatever has its id and
-  its name now is found by the next refresh (within a second).
+  one's rows as the other's). Id, name and recovery fork are checked under the database's shared lock (~5 µs, `experiments/27`). A database that
+  changed ends its capture; whatever has its id and its name now is found by the next refresh (within a second).
+* **The database is entered before its log is read** (`DatabaseIdentity.Held`). `fn_full_dblog` reads a database by id from outside, without
+  keeping anybody from restoring it or taking it offline. At the wrong moment that call fails an assertion inside SQL Server
+  (`logtrunc.cpp:834`, `stLSN != NullLSN`) whose session dies with the `DBTABLE` spinlock: **every session of the instance hangs until it is
+  restarted** (*measured*: hung the development instance, `experiments/35`; reproduced on a throwaway one, `experiments/36`, within 4 restores and
+  within 4 offline/online cycles, also with an explicit start). The full statement with its checks in front did not (83 restores, 76 offline
+  cycles), so the window was small - but it was there. Now a procedure call inside the database holds its shared lock while the read runs below
+  it, in master:
+
+  | | hangs | restores refused, one reader | plan cache, 1,200 databases | per read |
+  |---|---|---|---|---|
+  | read from master (before) | bare call: yes | 30 of 90 | 1.4 MB | 1.86 ms (the same small log, container) |
+  | read inside the database | no | 2 of 80 | **1.65 GB** (a plan of 1.4 MB each) | - |
+  | **held: entered, read in master** | **no: 548 restores, 297 offline cycles, 319 detach/attach** | **0 of 164** | ~20 MB | 1.84 ms + 0.08 ms for the guard |
+
+  Three details carry it (*measured*, `experiments/36`): the procedure's name is in a *variable*, because a name in the text opens the database
+  when the batch is compiled, before any guard in it runs; a database in `SINGLE_USER` is left alone (`DATABASEPROPERTYEX` takes no lock), its one
+  connection is the administrator's; `DEADLOCK_PRIORITY LOW` makes the miner the victim, not the restore. `sys.database_recovery_status`, read
+  from master, made 25 of 25 restores fail in a loop: it is only read under the lock now, and not at all for databases that are already captured.
+  `sys.dm_db_log_stats` and `sys.dm_io_virtual_file_stats` neither hang nor refuse anything. What is *not* excluded: a reader that waits for a
+  slow sink keeps its database open meanwhile, so a plain `RESTORE` (without `SINGLE_USER ... ROLLBACK IMMEDIATE`) waits for it.
 * **Every transaction is proved complete.** The commit record's `[Replicated Records]` is exactly the number of replicated records the
   transaction logged, undone ones too - in every recovery model, with row versioning, accelerated database recovery, bulk loads, LOBs, DDL
   (*measured*, `experiments/28`). A transaction is only published when that many were received. One that is not is read again from its
@@ -212,6 +231,8 @@ move it freely), and the data sits on storage that is already backed up and moni
   `ICheckpointStore` (an object store with ETag CAS fits).
 
 ### Starting without a checkpoint
+A `Latest` start whose log was released by someone else and truncated before its first read is a recorded gap: the log has no holes, so the first
+record that is read must reach back to the durable start point (found by the pipeline model; before, those changes were lost without a word).
 `Earliest` replays the retained log. `Latest` silently skips the existing log, then goes live, but it **publishes nothing until
 that start point is a durable checkpoint**. A `Latest` start point depends on *when* the catch-up ended. If the process crashed
 before saving it, the restart would choose a different one. The result would be a gap after events already delivered, or

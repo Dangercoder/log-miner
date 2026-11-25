@@ -93,26 +93,39 @@ public sealed class DatabaseCapture
     public void ClearQueued() => Volatile.Write(ref _queued, 0);
 
     private Lsn _bell; // the newest log block known to have been written
+    private bool _written; // something was written, which block is not known
+    private bool _unhardened;
     private int _bellRetries;
-    /// <summary>A log block was written: the next pump is expected to read it.</summary>
-    public void Ring(Lsn block) { lock (_gate) if (block > _bell) _bell = block; }
+    /// <summary>A log block was written (which one, if it is known): the next pump is expected to read it.</summary>
+    public void Ring(Lsn block)
+    {
+        lock (_gate)
+        {
+            if (block > _bell) _bell = block;
+            else if (block.IsZero) _written = true;
+        }
+    }
 
     /// <summary>
     /// After a pump: null when it reached the newest block that was pushed, otherwise when to try again. A block is readable when it is
     /// pushed (measured), but a change that would otherwise wait for the next one or for the sweep is worth asking twice. Gives up after a
     /// few times: a pump may have good reasons not to read (held for its start point).
+    /// <para>The poll notices a write when it is <i>issued</i>, and log is only read when it is on disk: while the read ends before log that is
+    /// not, it is asked again, for as long as a disk may reasonably take (8 s).</para>
     /// </summary>
     public TimeSpan? RetryForBell()
     {
         lock (_gate)
         {
-            if (_bell.IsZero || _lastLsn >= _bell || _bellRetries >= 6)
+            var issued = _written && _unhardened;
+            if (!issued && (_bell.IsZero || _lastLsn >= _bell) || _bellRetries >= (issued ? 40 : 6))
             {
                 if (_bellRetries >= 6) _bell = default;
                 _bellRetries = 0;
+                _written = false;
                 return null;
             }
-            return TimeSpan.FromMilliseconds(1 << _bellRetries++);
+            return TimeSpan.FromMilliseconds(Math.Min(250, 1 << Math.Min(8, _bellRetries++)));
         }
     }
 
@@ -450,6 +463,7 @@ public sealed class DatabaseCapture
         if (rows < settings.MaxRowsPerRead && _snapshot?.Pending is not null) readyEvents += CompleteChunk(); // caught up past H
         await SendReadyAsync(encoder, sink, settings, ct);
         LastPumpRows = rows;
+        lock (_gate) _unhardened = source.Unhardened;
         if (!_lastLsn.IsZero) _scanFrom = _lastLsn;
         var caughtUp = rows < settings.MaxRowsPerRead;
         if (caughtUp && _silent) await ReloadSchemaAsync(source, null, ct);

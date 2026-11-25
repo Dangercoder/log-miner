@@ -41,6 +41,8 @@ internal static class ServiceBench
             ["Routing__DestinationTemplate"] = "bench.{server}.{db}.{schema}.{table}", ["Sink__NatsJetStream__Stream"] = "LMBENCH", ["Sink__NatsJetStream__Subjects__0"] = "bench.>",
             ["HealthLogIntervalSeconds"] = "20", ["Databases__0"] = prefix + "*", ["Databases__1"] = also == "none" ? prefix + "*" : also, ["ReleaseLog"] = release,
         }) start.Environment["LogMiner__" + k] = v;
+        if (Environment.GetEnvironmentVariable("LOGMINER_LAB_CS") is { Length: > 0 }) // another instance
+            start.Environment["LogMiner__ConnectionString"] = new SqlConnectionStringBuilder(Program.ConnectionString()) { ApplicationName = "logminer" }.ConnectionString;
         var service = Process.Start(start)!;
         var sentFile = Path.Combine(work, "sent.txt");
         Process? loader = null;
@@ -118,7 +120,7 @@ internal static class ServiceBench
             await consuming;
             var l = latencies.Where(x => sent.Contains(x.Key)).Select(x => x.Value).Order().ToArray();
             double P(double q) => l.Length == 0 ? double.NaN : l[Math.Min(l.Length - 1, (int)(q * l.Length))];
-            Console.WriteLine(FormattableString.Invariant($"dispatch {Arg("--dispatch-ms", "4")} ms, push {Arg("--push", "true")}, {tps} tx/s over {dbs} databases ({also} captured, too; release {release}): {l.Length} of {sent.Count} events, {duplicates} duplicates"));
+            Console.WriteLine(FormattableString.Invariant($"{Arg("--name", "")} dispatch {Arg("--dispatch-ms", "4")} ms, push {Arg("--push", "true")}, {tps} tx/s over {dbs} databases ({also} captured, too; release {release}): {l.Length} of {sent.Count} events, {duplicates} duplicates"));
             Console.WriteLine(FormattableString.Invariant($"issue -> consumed ms: p50 {P(0.5):F1} p90 {P(0.9):F1} p99 {P(0.99):F1} p99.9 {P(0.999):F1} max {(l.Length > 0 ? l[^1] : double.NaN):F1}; over 20 ms: {l.Count(x => x > 20)}"));
             Console.WriteLine(FormattableString.Invariant($"logminer.exe: {cpu.TotalSeconds / elapsed * 100:F1}% of one core, {service.WorkingSet64 / 1048576} MB; its SQL sessions: {sql / elapsed / 10:F1}% of one core"));
             return l.Length == sent.Count && duplicates == 0 ? 0 : 1;

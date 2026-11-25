@@ -27,7 +27,7 @@ internal static class LoadGen
         var conns = new SqlConnection[dbs + 1];
         await Parallel.ForEachAsync(Enumerable.Range(1, dbs), new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (db, ct) =>
         {
-            conns[db] = new SqlConnection(Program.ConnectionString($"{prefix}{db:D4}").Replace("logminer-lab", "logminer-lab-load", StringComparison.Ordinal) + ";Pooling=false");
+            conns[db] = new SqlConnection(new SqlConnectionStringBuilder(Program.ConnectionString($"{prefix}{db:D4}")) { ApplicationName = "logminer-lab-load", Pooling = false }.ConnectionString);
             await conns[db].OpenAsync(ct);
             // warm the plan and the connection without writing anything
             await using var cmd = Insert(conns[db], 0, 0, 0);

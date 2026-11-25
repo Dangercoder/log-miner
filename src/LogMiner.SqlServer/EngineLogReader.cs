@@ -15,7 +15,7 @@ namespace LogMiner.SqlServer;
 /// move it (experiments/31), so the first record must be the one that was asked for. @end is never passed - a non-existent @end raises
 /// error 9003 (severity 20) which kills the session.</item>
 /// <item>Only hardened log is read. The function also returns blocks that are still in memory, whose transactions a crash un-happens and
-/// whose LSNs are then used again (experiments/29).</item>
+/// whose LSNs are then used again (experiments/29). Of those only the fact that they are there is taken (<see cref="Unhardened"/>).</item>
 /// <item>Filtered server-side to replicated/compensation records plus every commit/abort, plus one payload-free progress
 /// marker per log block (slot 0001). Without markers a scan that matches nothing cannot advance, and every later read would
 /// re-scan the same log - measured: 80-130 ms pumps that saturated the workers. Markers arrive as
@@ -43,10 +43,9 @@ public sealed class EngineLogReader(SqlConnection connection)
                [Transaction Begin], [End Time],
                CASE WHEN CONVERT(int, [Flag Bits]) & 1 = 1 THEN [Previous LSN] END, [Replicated Records]
         FROM sys.fn_full_dblog('0x' + @start, NULL, @dbid, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
-        CROSS APPLY (SELECT CASE WHEN (CONVERT(int, [Flag Bits]) & 5) <> 0 OR Operation IN (N'LOP_COMMIT_XACT', N'LOP_ABORT_XACT') THEN 1 ELSE 0 END) k(keep)
-        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation ELSE N'LOP_PROGRESS' END) m(keep, op)
-        WHERE (m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start) -- one progress marker per log block: the scan position always advances
-          AND [Current LSN] < @end
+        CROSS APPLY (SELECT CASE WHEN [Current LSN] >= @end THEN 0 WHEN (CONVERT(int, [Flag Bits]) & 5) <> 0 OR Operation IN (N'LOP_COMMIT_XACT', N'LOP_ABORT_XACT') THEN 1 ELSE 0 END) k(keep)
+        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' ELSE N'LOP_PROGRESS' END) m(keep, op)
+        WHERE m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start -- one progress marker per log block: the scan position always advances
         OPTION (MAXDOP 1) /*logminer-read*/;
         """;
 
@@ -61,15 +60,18 @@ public sealed class EngineLogReader(SqlConnection connection)
         CROSS APPLY (SELECT CASE WHEN Operation IN (N'LOP_COMMIT_XACT', N'LOP_ABORT_XACT', N'LOP_REPL_COMMAND')
                                    OR (Context IN (N'LCX_HEAP', N'LCX_CLUSTERED', N'LCX_MARK_AS_GHOST')
                                        AND Operation IN (N'LOP_INSERT_ROWS', N'LOP_DELETE_ROWS', N'LOP_MODIFY_ROW', N'LOP_MODIFY_COLUMNS'))
-                            THEN 1 ELSE 0 END) k(keep)
-        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation ELSE N'LOP_PROGRESS' END) m(keep, op)
-        WHERE (m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start) AND [Current LSN] < @end
+                            THEN 1 ELSE 0 END * CASE WHEN [Current LSN] >= @end THEN 0 ELSE 1 END) k(keep)
+        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' ELSE N'LOP_PROGRESS' END) m(keep, op)
+        WHERE m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start
         OPTION (MAXDOP 1) /*logminer-read*/;
         """;
 
     private static readonly string Batch = DatabaseIdentity.HeldText(", @start nvarchar(46), @max int", ", @start, @max");
 
     public SqlConnection Connection { get; } = connection;
+
+    /// <summary>The read that has ended ended before log that is not on disk yet.</summary>
+    public bool Unhardened { get; private set; }
 
     /// <summary>With the zone's rules at that time (a backlog may reach back over a clock change). In the hour that occurs twice, the second.</summary>
     internal static DateTime ToUtc(DateTime local, TimeZoneInfo zone) =>
@@ -93,16 +95,19 @@ public sealed class EngineLogReader(SqlConnection connection)
         var zone = TimeZoneInfo.FindSystemTimeZoneById(r.GetString(1));
         await r.NextResultAsync(ct);
         var exact = false;
+        Unhardened = false;
         while (await r.ReadAsync(ct))
         {
             // the log stores server-local times (sequential access: read in order)
             var lsn = Lsn.Parse(r.GetString(0));
             if (!exact && lsn != first) throw new LogTruncatedException(first, lsn); // truncated between the check and the read
             exact = true;
+            var operation = r.GetString(1);
+            if (Unhardened |= operation == "LOP_UNHARDENED") continue; // a block in memory, and whatever comes behind it
             yield return new LogRecord
             {
                 Lsn = lsn,
-                Operation = LogRecord.ParseOperation(r.GetString(1)),
+                Operation = LogRecord.ParseOperation(operation),
                 Context = LogRecord.ParseContext(r.GetString(2)),
                 TransactionId = LogRecord.ParseTransactionId(r.GetString(3)),
                 Flags = (LogRecordBits)r.GetInt32(4),

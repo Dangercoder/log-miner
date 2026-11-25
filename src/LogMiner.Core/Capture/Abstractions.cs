@@ -32,6 +32,9 @@ public interface ILogSource
     /// nothing that was read may be used before the enumeration has ended (or <see cref="VerifyAsync"/> has answered).</summary>
     IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, CancellationToken ct);
 
+    /// <summary>The last read ended before log that exists and is not on disk yet (it is not read before it is).</summary>
+    bool Unhardened => false;
+
     /// <summary>Raises <see cref="DatabaseChangedException"/> unless it still is that database. Usable while a read is open.</summary>
     Task VerifyAsync(DatabaseRef database, CancellationToken ct);
 
