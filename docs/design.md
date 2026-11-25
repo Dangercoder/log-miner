@@ -425,6 +425,18 @@ truncation a gap that was none); a restart right after a truncated position forg
 
 ## 7. Measured end-to-end (lab host, 1,200 databases, 200 transactions/s spread over all of them)
 
+Again on 2026-11-25, with everything since (held reads, names and layouts as of the change, receipts, safe positions), log release on, 60 s after the start
+(`--warm-s 60`: the first 45-60 s with 1,200 databases are start-up), 12,001 of 12,001 events and 0 duplicates in every run, versions in turn:
+
+| | 2026-11-24 version (ea7a67a), 4 runs | now, 6 runs |
+|---|---|---|
+| p50 | 3.8-3.9 ms | 3.9-4.1 ms |
+| p99 | 6.9-14.1 ms | 7.2-9.2 ms |
+| p99.9 | 11-22 ms | 16-19 ms (one run 113 ms: the host stood still, an application insert took 208 ms) |
+| CPU of `logminer.exe` / of its SQL sessions (one core) | 11.5-15.9 % / 4.7-8.8 % | 12.0-15.7 % / 5.0-5.9 % |
+
+The table below is from before, with log release off.
+
 `lab service`: `logminer.exe`, the load and the consumer are three processes, 40 s of load after start-up. Latency is from the application
 issuing the insert to the consumer receiving the event from JetStream.
 
