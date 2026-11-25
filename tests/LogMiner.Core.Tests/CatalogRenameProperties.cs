@@ -79,8 +79,8 @@ public class CatalogRenameProperties
         var schema = new DatabaseSchema(5, "db", [layout], new Lsn(1, 30, 1), history: history);
         var before = history.NameAt(Table, new Lsn(1, 5, 1));
         var reported = schema.Renamed(null, default).ToList();
-        Assert.True(before is { } name && name.Schema != "s2" || reported.Count > 0,
-            $"a change made in schema #5 is published as {before?.Schema ?? "s2"}.t, and {reported.Count} gaps are recorded for it");
+        Assert.Equal(("schema#5", "t"), before);
+        Assert.Single(reported);
     }
 
     /// <summary>A -> B, rows changed, B -> A (a deployment taken back), read later in one go: the rows changed in between are published as B, and the
