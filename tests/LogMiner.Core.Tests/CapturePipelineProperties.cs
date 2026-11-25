@@ -40,7 +40,7 @@ public class CapturePipelineProperties
     public void Model_test_reaches_the_interesting_scenarios()
     {
         Coverage.Clear();
-        Property.Test(tc => Every_committed_change_is_delivered_once_in_commit_order(tc), new Settings { TestCases = 80 });
+        Property.Test(tc => Every_committed_change_is_delivered_once_in_commit_order(tc), new Settings { TestCases = 160 });
         string[] required =
         [
             "pump", "settle-with-5+-events", "crash", "crash-with-checkpoint", "crash-with-open-txn", "remote-fails(spool)", "remote-fails(direct)",
@@ -105,6 +105,19 @@ public class CapturePipelineProperties
         m.CutATransactionAndRestart(pumpsBeforeRestart);
         m.Settle();
         Assert.True(m.Gaps > 0, "the cut transaction was not recorded");
+    }
+
+    /// <summary>Found by the model: the start point of a "Latest" start is durable, and before the first read somebody else releases the log and it is
+    /// truncated. The read then begins behind the changes that are gone, which must be reported.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Log_that_is_gone_before_the_first_read_is_reported(bool releasedByOthers)
+    {
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 3);
+        m.TruncateBeforeTheFirstRead(releasedByOthers);
+        m.Settle();
+        Assert.Equal(releasedByOthers, m.Gaps > 0);
     }
 
     /// <summary>A transaction that cannot be decoded stops the stream. What committed before it still goes out; it and everything behind it waits,
@@ -888,6 +901,16 @@ public class CapturePipelineProperties
             Flush();
         }
 
+        public void TruncateBeforeTheFirstRead(bool releasedByOthers)
+        {
+            Flush(); // the start point is durable; nothing was read
+            _db.CommitNewInsert();
+            if (releasedByOthers) _db.ForeignRelease();
+            _db.UntrackedTransaction();
+            _db.Truncate();
+            _db.CommitNewInsert();
+        }
+
         public void RestartBehindALongTransaction(int pumps)
         {
             _ = _db.LongTransaction(); // stays open: the restart point
@@ -1060,13 +1083,13 @@ public class CapturePipelineProperties
             _db.DuringCatalogRead = null;
             _remote.Heal();
             var sw = Stopwatch.StartNew();
-            while (sw.Elapsed < TimeSpan.FromSeconds(3))
+            while (sw.Elapsed < TimeSpan.FromSeconds(10))
             {
                 var more = PumpOnce();
                 Flush();
                 var spoolDrained = !_useSpool || _spool!.DeliveredSeq >= _spool.LastSeq;
                 if (!more && _capture.State != CaptureState.Faulted && spoolDrained && _capture.AcknowledgedCommit >= LastCommittedLsn()) break;
-                Thread.Sleep(1);
+                if (!more) Thread.Sleep(1);
             }
             CheckDelivered(complete: true);
             if (_gaps.Count == 0 && (_start == StartPosition.Latest || _snapshotCount > 0)) CheckReplica(); // deletes inside a gap are not conveyed
@@ -1088,11 +1111,11 @@ public class CapturePipelineProperties
                 while (!_capture.Live && sw.Elapsed < TimeSpan.FromSeconds(3)) PumpOnce();
                 _capture.RequestSnapshot(s);
                 _remote.Script(Enumerable.Repeat(SinkOutcome.FailWithoutStore, _finalFailures)); // chunks are lost in flight
-                while (!s.Done && sw.Elapsed < TimeSpan.FromSeconds(6)) { PumpOnce(); Flush(); Thread.Sleep(1); }
-                Assert.True(s.Done, "historical load did not finish");
+                while (!s.Done && sw.Elapsed < TimeSpan.FromSeconds(30)) { var more = PumpOnce(); Flush(); if (!more) Thread.Sleep(1); } // a sleep takes 16 ms
+                Assert.True(s.Done, $"historical load did not finish: live {_capture.Live}, {_capture.State} {_capture.Fault}, faults {_capture.ConsecutiveFaults}, queued {_capture.QueuedSnapshots}, active {_capture.ActiveSnapshot is not null}, holding {_capture.HoldingForBaseline}, last fault {_lastFault}");
                 Assert.False(s.Failed, $"historical load failed: {s.Error}");
                 Cover("snapshot-finished");
-                while (sw.Elapsed < TimeSpan.FromSeconds(9) && (_useSpool && _spool!.DeliveredSeq < _spool.LastSeq || _remote.Pending > 0)) Thread.Sleep(2);
+                while (sw.Elapsed < TimeSpan.FromSeconds(35) && (_useSpool && _spool!.DeliveredSeq < _spool.LastSeq || _remote.Pending > 0)) Thread.Sleep(2);
             }
             var replica = new SortedDictionary<int, int>();
             var seen = new HashSet<string>();

@@ -1,4 +1,5 @@
 using System.Globalization;
+using LogMiner.Capture;
 using LogMiner.Log;
 using LogMiner.Schema;
 using Microsoft.Data.SqlClient;
@@ -44,11 +45,11 @@ public static class CatalogLogReader
         OPTION (MAXDOP 1) /*logminer-catalog*/;
         """;
 
-    public static async Task<CatalogLog> ReadAsync(SqlConnection conn, int databaseId, Lsn? from, IReadOnlyList<SystemTable> tables, CancellationToken ct)
+    public static async Task<CatalogLog> ReadAsync(SqlConnection conn, DatabaseRef database, Lsn? from, IReadOnlyList<SystemTable> tables, CancellationToken ct)
     {
         var byAllocUnit = tables.ToDictionary(t => t.AllocUnitId, t => t.Table);
         var changes = new List<CatalogChange>();
-        await using (var cmd = Command(conn, ChangesQuery, databaseId, from))
+        await using (var cmd = Command(conn, ChangesQuery, ChangesBatch, database, from))
         {
             for (var i = 0; i < 5; i++)
                 cmd.Parameters.Add(new SqlParameter("@au" + i.ToString(CultureInfo.InvariantCulture), System.Data.SqlDbType.BigInt) { Value = i < tables.Count ? tables[i].AllocUnitId : 0L });
@@ -73,19 +74,19 @@ public static class CatalogLogReader
         if (changes.Count == 0) return new CatalogLog(changes, outcomes);
 
         var xids = changes.Select(c => c.TransactionId).ToHashSet();
-        var begun = await ReadOutcomesAsync(conn, databaseId, from, xids, outcomes, ct);
+        var begun = await ReadOutcomesAsync(conn, database, from, xids, outcomes, ct);
         // a transaction that began before the scanned range: its type (user or system) is in its begin record, further back
-        if (from is not null && !begun.SetEquals(xids)) begun = await ReadOutcomesAsync(conn, databaseId, null, xids, outcomes, ct);
+        if (from is not null && !begun.SetEquals(xids)) begun = await ReadOutcomesAsync(conn, database, null, xids, outcomes, ct);
         foreach (var x in xids.Where(x => !begun.Contains(x))) outcomes.Remove(x); // unknown: the history builder refuses to guess
         return new CatalogLog(changes, outcomes);
     }
 
-    private static async Task<HashSet<ulong>> ReadOutcomesAsync(SqlConnection conn, int databaseId, Lsn? from, HashSet<ulong> xids,
+    private static async Task<HashSet<ulong>> ReadOutcomesAsync(SqlConnection conn, DatabaseRef database, Lsn? from, HashSet<ulong> xids,
                                                                 Dictionary<ulong, TransactionOutcome> outcomes, CancellationToken ct)
     {
         var begun = new HashSet<ulong>();
         outcomes.Clear();
-        await using var cmd = Command(conn, OutcomesQuery, databaseId, from);
+        await using var cmd = Command(conn, OutcomesQuery, OutcomesBatch, database, from);
         cmd.Parameters.Add(new SqlParameter("@xids", System.Data.SqlDbType.NVarChar, -1) { Value = string.Join(',', xids.Select(LogRecord.FormatTransactionId)) });
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -105,10 +106,13 @@ public static class CatalogLogReader
         return begun;
     }
 
-    private static SqlCommand Command(SqlConnection conn, string sql, int databaseId, Lsn? from)
+    private static readonly string ChangesBatch = DatabaseIdentity.HeldText(", @start nvarchar(46), @au0 bigint, @au1 bigint, @au2 bigint, @au3 bigint, @au4 bigint", ", @start, @au0, @au1, @au2, @au3, @au4");
+    private static readonly string OutcomesBatch = DatabaseIdentity.HeldText(", @start nvarchar(46), @xids nvarchar(max)", ", @start, @xids");
+
+    private static SqlCommand Command(SqlConnection conn, string sql, string batch, DatabaseRef database, Lsn? from)
     {
-        var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 }; // a long backlog is one long scan; cancellation ends it
-        cmd.Parameters.Add(new SqlParameter("@dbid", System.Data.SqlDbType.Int) { Value = databaseId });
+        var cmd = DatabaseIdentity.Held(conn, database, sql, batch);
+        cmd.CommandTimeout = 0; // a long backlog is one long scan; cancellation ends it
         cmd.Parameters.Add(new SqlParameter("@start", System.Data.SqlDbType.NVarChar, 46) { Value = from is { } s ? s.ToString() : DBNull.Value });
         return cmd;
     }

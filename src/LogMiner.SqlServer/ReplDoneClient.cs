@@ -46,9 +46,8 @@ public static class ReplDoneClient
 
     private static SqlCommand Inside(SqlConnection conn, DatabaseRef database, string statement)
     {
-        var cmd = new SqlCommand($"EXEC {SchemaLoader.Quote(database.Name)}.sys.sp_executesql @stmt, N'{DatabaseIdentity.InsideParameters}, @x binary(10), @s binary(10)', @dbid, @fork, @x, @s", conn) { CommandTimeout = 30 };
-        cmd.Parameters.Add(new SqlParameter("@stmt", System.Data.SqlDbType.NVarChar, -1) { Value = DatabaseIdentity.CheckInside + " " + statement });
-        DatabaseIdentity.AddParameters(cmd, database, name: false);
+        var cmd = DatabaseIdentity.Inside(conn, database, statement, ", @x binary(10), @s binary(10)", ", @x, @s");
+        cmd.CommandTimeout = 30;
         cmd.Parameters.Add(new SqlParameter("@x", System.Data.SqlDbType.Binary, 10) { Value = DBNull.Value });
         cmd.Parameters.Add(new SqlParameter("@s", System.Data.SqlDbType.Binary, 10) { Value = DBNull.Value });
         return cmd;

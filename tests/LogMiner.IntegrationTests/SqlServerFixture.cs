@@ -10,8 +10,8 @@ public static class TestServer
         int.TryParse(Environment.GetEnvironmentVariable("LOGMINER_SOAK"), out var factor) && factor > 1 ? normal * factor : normal;
 
     public static string ConnectionString(string db = "master") =>
-        Environment.GetEnvironmentVariable("LOGMINER_IT_CS")
-        ?? $"Data Source=localhost;Initial Catalog={db};Integrated Security=true;TrustServerCertificate=true;Application Name=logminer-tests;Pooling=true";
+        Environment.GetEnvironmentVariable("LOGMINER_IT_CS") is { Length: > 0 } other ? new SqlConnectionStringBuilder(other) { InitialCatalog = db }.ConnectionString
+        : $"Data Source=localhost;Initial Catalog={db};Integrated Security=true;TrustServerCertificate=true;Application Name=logminer-tests;Pooling=true";
 
     public static async Task ExecAsync(string sql, string db = "master")
     {

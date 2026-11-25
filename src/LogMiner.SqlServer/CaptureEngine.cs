@@ -568,10 +568,10 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
             if (start == StartPosition.Auto) _log.LogInformation("{Database}: no checkpoint, resuming from SQL Server's oldest unreleased replicated transaction {Lsn}", database.Name, oldest);
             return (start == StartPosition.Auto ? StartPosition.Earliest : start, oldest);
         }
-        await using var cmd = new SqlCommand("SELECT log_end_lsn FROM sys.dm_db_log_stats(@id)", conn);
-        cmd.Parameters.AddWithValue("@id", database.Id);
-        var end = await cmd.ExecuteScalarAsync(ct) as string;
-        await DatabaseIdentity.VerifyAsync(conn, database, ct);
+        await using var cmd = DatabaseIdentity.Held(conn, database, "SELECT log_end_lsn FROM sys.dm_db_log_stats(@dbid);");
+        string? end;
+        try { end = await cmd.ExecuteScalarAsync(ct) as string; }
+        catch (SqlException ex) when (DatabaseIdentity.IsChanged(ex)) { throw new DatabaseChangedException(database, ex); }
         return (start == StartPosition.Auto ? StartPosition.Latest : start, end is null ? default : Lsn.Parse(end));
     }
 
@@ -580,17 +580,19 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
     /// restored, an unreadable replica) is tried again later and does not keep the others waiting.</summary>
     public async Task RefreshDatabasesAsync(CancellationToken ct)
     {
+        var listed = new List<(int Id, string Name, string Created, bool Published)>();
         var found = new Dictionary<int, (string Name, string Incarnation, bool Published)>();
         var notCapturable = new List<(string, string)>();
-        var closed = new HashSet<string>(StringComparer.Ordinal);
+        var closed = new Dictionary<string, string>(StringComparer.Ordinal);
         await using (var conn = new SqlConnection(options.ConnectionString))
         {
             await conn.OpenAsync(ct);
+            // only what is known about a database without touching it
             await using var cmd = new SqlCommand("""
-                SELECT d.database_id, d.name, CONVERT(char(32), CONVERT(binary(16), r.recovery_fork_guid), 2) + '-' + CONVERT(char(17), d.create_date, 121),
+                SELECT d.database_id, d.name, '-' + CONVERT(char(17), d.create_date, 121),
                        CASE WHEN d.state <> 0 THEN d.state_desc WHEN d.is_read_only = 1 THEN N'READ_ONLY' WHEN d.source_database_id IS NOT NULL THEN N'SNAPSHOT'
                             WHEN d.is_cdc_enabled = 0 THEN N'CDC is not enabled' END, CONVERT(bit, d.is_published | d.is_merge_published)
-                FROM sys.databases d LEFT JOIN sys.database_recovery_status r ON r.database_id = d.database_id
+                FROM sys.databases d
                 WHERE d.database_id > 4
                 """, conn);
             await using var r = await cmd.ExecuteReaderAsync(ct);
@@ -599,11 +601,41 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
                 var name = r.GetString(1);
                 if (name == SelfTest.DatabaseName || !(options.DatabaseFilter?.Invoke(name) ?? true)) continue;
                 if (!r.IsDBNull(3)) { if (options.DatabaseFilter is not null || r.GetString(3) != "CDC is not enabled") notCapturable.Add((name, r.GetString(3))); }
-                else if (!r.IsDBNull(2)) found[r.GetInt32(0)] = (name, r.GetString(2).Replace(" ", "", StringComparison.Ordinal), r.GetBoolean(4));
-                else closed.Add(name); // not started, or in use by a single user: no recovery fork to identify it by
+                else listed.Add((r.GetInt32(0), name, r.GetString(2).Replace(" ", "", StringComparison.Ordinal), r.GetBoolean(4)));
             }
         }
         NotCapturable = notCapturable;
+        SqlConnection? open = null;
+        async Task<SqlConnection> OpenAsync()
+        {
+            if (open is { State: System.Data.ConnectionState.Open }) return open;
+            if (open is not null) await open.DisposeAsync();
+            open = new SqlConnection(options.ConnectionString);
+            await open.OpenAsync(ct); // the server itself is gone: the whole refresh fails
+            return open;
+        }
+        try
+        {
+            foreach (var (id, name, created, published) in listed)
+            {
+                // a capture that is running proves its recovery fork with every read (a restore in place shows there, not here)
+                if (_captures.TryGetValue(id, out var c) && c.Name == name && c.Incarnation.EndsWith(created, StringComparison.Ordinal)) { found[id] = (name, c.Incarnation, published); continue; }
+                var conn = await OpenAsync();
+                try
+                {
+                    if (await DatabaseIdentity.RecoveryForkAsync(conn, id, name, ct) is { } fork) found[id] = (name, fork + created, published);
+                    else closed[name] = "not started: it has no recovery fork to identify it by";
+                }
+                catch (Exception ex) when (ex is DatabaseChangedException or SqlException && !ct.IsCancellationRequested) { closed[name] = ex.Message; }
+            }
+            await TakeOverAsync(found, notCapturable, closed, OpenAsync, ct);
+        }
+        finally { if (open is not null) await open.DisposeAsync(); }
+    }
+
+    private async Task TakeOverAsync(Dictionary<int, (string Name, string Incarnation, bool Published)> found, List<(string, string)> notCapturable, Dictionary<string, string> closed,
+                                     Func<Task<SqlConnection>> openAsync, CancellationToken ct)
+    {
         // first whatever is over: a stale capture must not save a position under a name that belongs to another database now
         foreach (var (id, c) in _captures.ToArray())
         {
@@ -614,53 +646,46 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
             if (found.ContainsKey(id)) _log.LogWarning("{Database}: the database was restored, re-created or renamed", c.Name);
             else _log.LogError("{Database} is NOT captured any more: {Why}", c.Name, notCapturable.FirstOrDefault(x => x.Item1 == c.Name).Item2 ?? "the database is gone, or excluded");
         }
-        foreach (var name in _notOpened.Keys.Where(n => !closed.Contains(n) && found.Values.All(f => f.Name != n)).ToArray()) _notOpened.TryRemove(name, out _);
-        foreach (var name in closed)
-            if (_notOpened.TryAdd(name, "not started, or in use by a single user")) _log.LogError("{Database}: not started, or in use by a single user, so it is NOT captured yet; trying again (SQL Server keeps its log meanwhile)", name);
-        SqlConnection? open = null;
-        try
+        foreach (var name in _notOpened.Keys.Where(n => !closed.ContainsKey(n) && found.Values.All(f => f.Name != n)).ToArray()) _notOpened.TryRemove(name, out _);
+        foreach (var (name, why) in closed)
         {
-            foreach (var (id, (name, incarnation, published)) in found)
-            {
-                if (_captures.ContainsKey(id)) continue;
-                var database = new DatabaseRef(id, name, incarnation);
-                var cp = await checkpoints.LoadAsync(name, ct);
-                StartPosition start;
-                Lsn holdFrom;
-                if (cp is not null && cp.Incarnation == incarnation) (start, holdFrom) = (options.Settings.StartPosition, default);
-                else
-                {
-                    if (open is null || open.State != System.Data.ConnectionState.Open)
-                    {
-                        if (open is not null) await open.DisposeAsync();
-                        open = new SqlConnection(options.ConnectionString);
-                        await open.OpenAsync(ct); // the server itself is gone: the whole refresh fails
-                    }
-                    try { (start, holdFrom) = await ResolveStartAsync(open, database, ct); }
-                    catch (Exception ex) when (ex is DatabaseChangedException or SqlException && !ct.IsCancellationRequested)
-                    {
-                        if (_notOpened.TryAdd(name, ex.Message)) _log.LogError(ex, "{Database}: cannot be opened, so it is NOT captured yet; trying again (SQL Server keeps its log meanwhile)", name);
-                        _notOpened[name] = ex.Message;
-                        continue;
-                    }
-                }
-                if (_notOpened.TryRemove(name, out _)) _log.LogInformation("{Database}: opened", name);
-                if (published) _log.LogError("{Database} is published for replication: its log is the Log Reader Agent's to release, so the miner does not release it and cannot keep it either", name);
-                var c = new DatabaseCapture(id, name, incarnation, cp, start, holdFrom) { ReleasedByOthers = published };
-                if (c.DiscardedCheckpoint is { } old)
-                {
-                    _log.LogCritical("{Database}: ignoring checkpoint of incarnation {Old} (now {New}): the database was restored or re-created, its contents no longer follow from the published events. " +
-                                     "Capture restarts at {Start}; policy: {Policy}.", name, old.Incarnation, incarnation, start, options.Settings.OnGap);
-                    if (options.Gaps is not null)
-                        await options.Gaps.RecordAsync(new CaptureGap(name, incarnation, old.LastCommitLsn, default, LogContinuity.Broken,
-                            $"the database was restored or re-created (was {old.Incarnation})", DateTimeOffset.UtcNow), options.Settings.OnGap == GapPolicy.Resync, ct);
-                }
-                _captures[id] = c;
-                _tableStates.TryRemove(id, out _);
-                _missing.TryRemove(name, out _);
-                MarkDirty(c);
-            }
+            if (_notOpened.TryAdd(name, why)) _log.LogError("{Database}: cannot be opened ({Why}), so it is NOT captured yet; trying again (SQL Server keeps its log meanwhile)", name, why);
+            _notOpened[name] = why;
         }
-        finally { if (open is not null) await open.DisposeAsync(); }
+        foreach (var (id, (name, incarnation, published)) in found)
+        {
+            if (_captures.ContainsKey(id)) continue;
+            var database = new DatabaseRef(id, name, incarnation);
+            var cp = await checkpoints.LoadAsync(name, ct);
+            StartPosition start;
+            Lsn holdFrom;
+            if (cp is not null && cp.Incarnation == incarnation) (start, holdFrom) = (options.Settings.StartPosition, default);
+            else
+            {
+                var open = await openAsync();
+                try { (start, holdFrom) = await ResolveStartAsync(open, database, ct); }
+                catch (Exception ex) when (ex is DatabaseChangedException or SqlException && !ct.IsCancellationRequested)
+                {
+                    if (_notOpened.TryAdd(name, ex.Message)) _log.LogError(ex, "{Database}: cannot be opened, so it is NOT captured yet; trying again (SQL Server keeps its log meanwhile)", name);
+                    _notOpened[name] = ex.Message;
+                    continue;
+                }
+            }
+            if (_notOpened.TryRemove(name, out _)) _log.LogInformation("{Database}: opened", name);
+            if (published) _log.LogError("{Database} is published for replication: its log is the Log Reader Agent's to release, so the miner does not release it and cannot keep it either", name);
+            var c = new DatabaseCapture(id, name, incarnation, cp, start, holdFrom) { ReleasedByOthers = published };
+            if (c.DiscardedCheckpoint is { } old)
+            {
+                _log.LogCritical("{Database}: ignoring checkpoint of incarnation {Old} (now {New}): the database was restored or re-created, its contents no longer follow from the published events. " +
+                                 "Capture restarts at {Start}; policy: {Policy}.", name, old.Incarnation, incarnation, start, options.Settings.OnGap);
+                if (options.Gaps is not null)
+                    await options.Gaps.RecordAsync(new CaptureGap(name, incarnation, old.LastCommitLsn, default, LogContinuity.Broken,
+                        $"the database was restored or re-created (was {old.Incarnation})", DateTimeOffset.UtcNow), options.Settings.OnGap == GapPolicy.Resync, ct);
+            }
+            _captures[id] = c;
+            _tableStates.TryRemove(id, out _);
+            _missing.TryRemove(name, out _);
+            MarkDirty(c);
+        }
     }
 }

@@ -23,7 +23,8 @@ public sealed class SqlSnapshotSource(string connectionString, int lockTimeoutMs
     /// <summary>What the layout does not say: collations (to send text keys in the right code page), CLR types, and whether all of it is visible.</summary>
     private static async Task<Dictionary<string, Column>> ColumnsAsync(SqlConnection conn, TableLayout table, CancellationToken ct)
     {
-        await using var cmd = new SqlCommand($"EXEC {SchemaLoader.Quote(table.Database)}.sys.sp_executesql @stmt, N'@id int', @id", conn) { CommandTimeout = 60 };
+        await using var cmd = new SqlCommand(DatabaseIdentity.Guard + "DECLARE @enter nvarchar(300) = QUOTENAME(@db) + N'.sys.sp_executesql'; EXEC @enter @stmt, N'@id int', @id", conn) { CommandTimeout = 60 };
+        cmd.Parameters.Add(new SqlParameter("@db", SqlDbType.NVarChar, 128) { Value = table.Database });
         cmd.Parameters.Add(new SqlParameter("@stmt", SqlDbType.NVarChar, -1) { Value = """
             SELECT c.name, c.collation_name, CONVERT(bit, CASE WHEN c.system_type_id = 240 THEN 1 ELSE 0 END),
                    CONVERT(bit, CASE WHEN c.is_masked = 1 AND ISNULL(HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'UNMASK'), 0) = 0 THEN 1 ELSE 0 END)

@@ -9,8 +9,8 @@ namespace LogMiner.SqlServer;
 /// Reads a database's transaction log through the engine (sys.fn_full_dblog), so TDE-encrypted logs are decrypted
 /// by SQL Server and the miner never holds key material.
 /// <list type="bullet">
-/// <item>One statement for every database (database id is a parameter): one cached plan for 1,200 databases.</item>
-/// <item>The database is identified before and after the rows (<see cref="DatabaseIdentity"/>): the function reads whatever has the id now.</item>
+/// <item>One statement for every database (database id is a parameter): one cached plan for 1,200 databases. The database is entered, and so kept
+/// from being restored or taken offline, until the read has ended: see <see cref="DatabaseIdentity"/> for what happens otherwise.</item>
 /// <item>A @start that was truncated away is refused (<see cref="LogTruncatedException"/>), never moved silently: the function itself would
 /// move it (experiments/31), so the first record must be the one that was asked for. @end is never passed - a non-existent @end raises
 /// error 9003 (severity 20) which kills the session.</item>
@@ -36,9 +36,7 @@ public sealed class EngineLogReader(SqlConnection connection)
         SELECT @start, CURRENT_TIMEZONE_ID();
         """;
 
-    public const string ReplicatedQuery = DatabaseIdentity.Check + """
-
-        """ + Prologue + """
+    public const string ReplicatedQuery = Prologue + """
         SELECT TOP (@max) [Current LSN], m.op, Context, [Transaction ID], CONVERT(int, [Flag Bits]) * m.keep, AllocUnitId, PartitionId,
                [Offset in Row], [Modify Size], [Log Record Length],
                CASE WHEN m.keep = 1 THEN [RowLog Contents 0] END, CASE WHEN m.keep = 1 THEN [RowLog Contents 1] END, NULL,
@@ -50,13 +48,10 @@ public sealed class EngineLogReader(SqlConnection connection)
         WHERE (m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start) -- one progress marker per log block: the scan position always advances
           AND [Current LSN] < @end
         OPTION (MAXDOP 1) /*logminer-read*/;
-
-        """ + DatabaseIdentity.Check;
+        """;
 
     /// <summary>No-CDC mode: every row operation on heaps/clustered indexes (client filters by allocation unit).</summary>
-    public const string AllRowsQuery = DatabaseIdentity.Check + """
-
-        """ + Prologue + """
+    public const string AllRowsQuery = Prologue + """
         SELECT TOP (@max) [Current LSN], m.op, Context, [Transaction ID], CONVERT(int, [Flag Bits]) * m.keep, AllocUnitId, PartitionId,
                [Offset in Row], [Modify Size], [Log Record Length],
                CASE WHEN m.keep = 1 THEN [RowLog Contents 0] END, CASE WHEN m.keep = 1 THEN [RowLog Contents 1] END,
@@ -70,8 +65,9 @@ public sealed class EngineLogReader(SqlConnection connection)
         CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation ELSE N'LOP_PROGRESS' END) m(keep, op)
         WHERE (m.keep = 1 OR [Current LSN] LIKE N'%:0001' OR [Current LSN] = @start) AND [Current LSN] < @end
         OPTION (MAXDOP 1) /*logminer-read*/;
+        """;
 
-        """ + DatabaseIdentity.Check;
+    private static readonly string Batch = DatabaseIdentity.HeldText(", @start nvarchar(46), @max int", ", @start, @max");
 
     public SqlConnection Connection { get; } = connection;
 
@@ -83,8 +79,8 @@ public sealed class EngineLogReader(SqlConnection connection)
     public async IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, CaptureScope scope,
                                                        [EnumeratorCancellation] CancellationToken ct)
     {
-        await using var cmd = new SqlCommand(scope == CaptureScope.CdcTrackedTables ? ReplicatedQuery : AllRowsQuery, Connection) { CommandTimeout = 120 };
-        DatabaseIdentity.AddParameters(cmd, database);
+        await using var cmd = DatabaseIdentity.Held(Connection, database, scope == CaptureScope.CdcTrackedTables ? ReplicatedQuery : AllRowsQuery, Batch);
+        cmd.CommandTimeout = 120;
         cmd.Parameters.Add(new SqlParameter("@start", System.Data.SqlDbType.NVarChar, 46) { Value = start is { } s ? s.ToString() : DBNull.Value });
         cmd.Parameters.Add(new SqlParameter("@max", System.Data.SqlDbType.Int) { Value = maxRows });
         SqlDataReader reader;
@@ -125,8 +121,6 @@ public sealed class EngineLogReader(SqlConnection connection)
             };
         }
         if (!exact) throw new InvalidOperationException($"{database}: record {first} is not in the log");
-        // the check behind the rows has no result set of its own: running into the end of the batch raises its error
-        try { while (await r.NextResultAsync(ct)) { } }
-        catch (SqlException ex) when (DatabaseIdentity.IsChanged(ex)) { throw new DatabaseChangedException(database, ex); }
+        while (await r.NextResultAsync(ct)) { } // an error behind the rows is raised here
     }
 }

@@ -408,6 +408,10 @@ public sealed class DatabaseCapture
         await foreach (var r in source.ReadAsync(Database, _scanFrom, settings.MaxRowsPerRead, ct))
         {
             rows++;
+            // Only the start point is durable, and the read began wherever the log begins now. The log has no holes, so it must reach back to that
+            // point; otherwise somebody else released it before the first read.
+            if (rows == 1 && _scanFrom is null && !_skipThrough.IsZero && r.Lsn > new Lsn(_skipThrough.Vlf, _skipThrough.Block, (ushort)(_skipThrough.Slot + 1)))
+                throw new LogTruncatedException(_skipThrough, r.Lsn);
             lock (_gate)
             {
                 if (r.Lsn == _lastLsn) continue; // a read starts with the last record of the one before (anything older: out of order, an error)

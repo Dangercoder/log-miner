@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using LogMiner.Capture;
 using LogMiner.Log;
 using LogMiner.Pipeline;
@@ -12,11 +13,26 @@ namespace LogMiner.SqlServer;
 /// </summary>
 public sealed class EngineLogSource(SqlConnection readerConnection, string connectionString, CaptureScope scope) : ILogSource
 {
-    public IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, CancellationToken ct) =>
-        new EngineLogReader(readerConnection).ReadAsync(database, start, maxRows, scope, ct);
+    private DatabaseRef? _held;
+
+    public async IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, [EnumeratorCancellation] CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var r in new EngineLogReader(readerConnection).ReadAsync(database, start, maxRows, scope, ct))
+            {
+                _held = database;
+                yield return r;
+            }
+        }
+        finally { _held = null; }
+    }
 
     public async Task VerifyAsync(DatabaseRef database, CancellationToken ct)
     {
+        // a read that is open has proven it, and keeps it that way. (Entering it again, on another connection, would wait behind somebody who
+        // waits for that read to end, e.g. to restore the database.)
+        if (_held == database && readerConnection.State == System.Data.ConnectionState.Open) return;
         await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);
         await DatabaseIdentity.VerifyAsync(conn, database, ct);

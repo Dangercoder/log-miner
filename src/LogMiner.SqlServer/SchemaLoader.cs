@@ -25,8 +25,7 @@ public static class SchemaLoader
 
     // Runs inside the target database via [db].sys.sp_executesql so catalog views resolve there (any compatibility level).
     // An open transaction with DDL holds catalog rows that this has to wait for: not for long, others need the worker (it is tried again).
-    private const string Query = DatabaseIdentity.CheckInside + """
-
+    private const string Query = """
         SET LOCK_TIMEOUT 10000;
         SELECT log_end_lsn FROM sys.dm_db_log_stats(DB_ID()); -- before the catalog: DDL committed before this is in what follows
         SELECT t.object_id, SCHEMA_NAME(t.schema_id), t.name, p.partition_id, p.data_compression, p.index_id,
@@ -93,12 +92,12 @@ public static class SchemaLoader
             Catalog catalog;
             try { catalog = await ReadCatalogAsync(conn, id, scope, formerObjects, unresolvedRowsets, ct); }
             catch (SqlException ex) when (DatabaseIdentity.IsChanged(ex)) { throw new DatabaseChangedException(id, ex); }
-            var log = await CatalogLogReader.ReadAsync(conn, databaseId, from, catalog.SystemTables, ct);
+            var log = await CatalogLogReader.ReadAsync(conn, id, from, catalog.SystemTables, ct);
             var coversFrom = from ?? default;
             var history = new LayoutHistory(coversFrom, new Dictionary<long, IReadOnlyList<LayoutVersion>>());
             if (log.Changes.Count > 0)
             {
-                var formats = await ReadFormatsAsync(conn, databaseId, database, ct);
+                var formats = await ReadFormatsAsync(conn, id, ct);
                 // a rowset that is gone, of a table that still exists but is not captured any more: load that table too
                 var former = CatalogHistory.OwnersOf(unresolvedRowsets, log.Changes, formats.Tables)
                     .Where(o => formats.UserTables.Contains(o) && catalog.Rows.All(r => r.ObjectId != o) && formerObjects.Add(o)).ToList();
@@ -143,9 +142,8 @@ public static class SchemaLoader
     private static async Task<Catalog> ReadCatalogAsync(SqlConnection conn, DatabaseRef id, CaptureScope scope, HashSet<int> formerObjects, IReadOnlySet<long> rowsets, CancellationToken ct)
     {
         var database = id.Name;
-        await using var cmd = new SqlCommand($"EXEC {Quote(database)}.sys.sp_executesql @stmt, N'{DatabaseIdentity.InsideParameters}, @scope int, @objects nvarchar(max), @rowsets nvarchar(max)', @dbid, @fork, @scope, @objects, @rowsets", conn) { CommandTimeout = 60 };
-        DatabaseIdentity.AddParameters(cmd, id, name: false);
-        cmd.Parameters.Add(new SqlParameter("@stmt", System.Data.SqlDbType.NVarChar, -1) { Value = Query });
+        await using var cmd = DatabaseIdentity.Inside(conn, id, Query, ", @scope int, @objects nvarchar(max), @rowsets nvarchar(max)", ", @scope, @objects, @rowsets");
+        cmd.CommandTimeout = 60;
         cmd.Parameters.AddWithValue("@scope", scope == CaptureScope.AllUserTables ? 1 : 0);
         cmd.Parameters.Add(new SqlParameter("@objects", System.Data.SqlDbType.NVarChar, -1) { Value = IdList(formerObjects.Select(o => (long)o)) });
         cmd.Parameters.Add(new SqlParameter("@rowsets", System.Data.SqlDbType.NVarChar, -1) { Value = IdList(rowsets) });
@@ -179,10 +177,11 @@ public static class SchemaLoader
         return new Catalog(asOf, rows, untracked, notCaptured, starts.GroupBy(s => s.ObjectId).ToDictionary(g => g.Key, g => (IReadOnlyList<Lsn>)g.Select(s => s.Start).ToArray()), system);
     }
 
-    private static async Task<Formats> ReadFormatsAsync(SqlConnection conn, int databaseId, string database, CancellationToken ct)
+    private static async Task<Formats> ReadFormatsAsync(SqlConnection conn, DatabaseRef id, CancellationToken ct)
     {
-        await using var cmd = new SqlCommand($"EXEC {Quote(database)}.sys.sp_executesql @stmt", conn) { CommandTimeout = 60 };
-        cmd.Parameters.Add(new SqlParameter("@stmt", System.Data.SqlDbType.NVarChar, -1) { Value = FormatsQuery });
+        var (databaseId, database, _) = id;
+        await using var cmd = DatabaseIdentity.Inside(conn, id, FormatsQuery);
+        cmd.CommandTimeout = 60;
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var rows = new List<(int ObjectId, long RowsetId, ColumnLayout Column)>();
         while (await r.ReadAsync(ct))
