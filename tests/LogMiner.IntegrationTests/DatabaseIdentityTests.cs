@@ -62,12 +62,14 @@ public sealed class DatabaseIdentityTests : IAsyncLifetime
         return Convert.ToString(await cmd.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)!;
     }
 
-    private async Task StartAsync(params string[] only)
+    private Task StartAsync(params string[] only) => StartAsync(StartPosition.Auto, only);
+
+    private async Task StartAsync(StartPosition start, params string[] only)
     {
         _engine = new CaptureEngine(new CaptureOptions
         {
             ConnectionString = TestServer.ConnectionString(), DatabaseFilter = n => n.StartsWith(Name(""), StringComparison.Ordinal) && (only.Length == 0 || only.Any(o => n == Name(o))),
-            Workers = 2, CheckpointInterval = TimeSpan.FromMilliseconds(50), ReleaseInterval = TimeSpan.Zero, Settings = new CaptureSettings { StartPosition = StartPosition.Auto },
+            Workers = 2, CheckpointInterval = TimeSpan.FromMilliseconds(50), ReleaseInterval = TimeSpan.Zero, Settings = new CaptureSettings { StartPosition = start },
             SweepInterval = TimeSpan.FromSeconds(1), HoldCheckInterval = TimeSpan.FromHours(1), DatabaseRefreshInterval = TimeSpan.FromHours(1), Gaps = new Recorder(_gaps),
         }, new DmvPollSignal(TestServer.ConnectionString(), TimeSpan.FromMilliseconds(5)), new(new EncoderOptions { ServerName = "it" }), _sink, _store);
         await _engine.StartAsync(CancellationToken.None);
@@ -158,6 +160,21 @@ public sealed class DatabaseIdentityTests : IAsyncLifetime
         for (var i = 101; i <= 160; i++) await InsertAsync("a", i); // the log grows through the same LSNs again
         await ArrivedAsync(Enumerable.Range(101, 60).Select(i => ("a", i)).ToArray());
         Assert.Contains(_gaps, g => g.Database == Name("a"));
+    }
+
+    /// <summary>What SQL Server still holds (nothing was released since CDC was enabled): skipped when that is asked for, otherwise the beginning.</summary>
+    [Theory]
+    [InlineData(StartPosition.Latest, false)]
+    [InlineData(StartPosition.Auto, true)]
+    [InlineData(StartPosition.Earliest, true)]
+    public async Task A_start_without_a_position(StartPosition start, bool history)
+    {
+        for (var i = 1; i <= 3; i++) await InsertAsync("a", i);
+        await StartAsync(start, "a");
+        await InsertAsync("a", 10);
+        await ArrivedAsync(("a", 10));
+        await Task.Delay(300);
+        Assert.Equal(history ? [1, 2, 3, 10] : [10], Published().Select(p => p.Id).Order());
     }
 
     private static async Task<DatabaseRef> RefAsync(string name)

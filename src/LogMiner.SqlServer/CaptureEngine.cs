@@ -563,7 +563,7 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
     private async Task<(StartPosition Start, Lsn HoldFrom)> ResolveStartAsync(SqlConnection conn, DatabaseRef database, CancellationToken ct)
     {
         var start = options.Settings.StartPosition;
-        if (await ReplDoneClient.OldestUnreleasedAsync(conn, database, ct) is { } oldest)
+        if (start != StartPosition.Latest && await ReplDoneClient.OldestUnreleasedAsync(conn, database, ct) is { } oldest)
         {
             if (start == StartPosition.Auto) _log.LogInformation("{Database}: no checkpoint, resuming from SQL Server's oldest unreleased replicated transaction {Lsn}", database.Name, oldest);
             return (start == StartPosition.Auto ? StartPosition.Earliest : start, oldest);
