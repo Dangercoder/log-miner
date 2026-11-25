@@ -68,15 +68,31 @@ public class HistoricalLoadTests
             var replica = new SortedDictionary<int, (int V, string? Pad)>();
             var seen = new HashSet<string>();
             int reads = 0, changes = 0;
+            HashSet<int>? mentioned = null;
+            long? rowsInLoad = null;
             foreach (var m in sink.Snapshot())
             {
                 if (!seen.Add(m.MessageId)) continue;
                 using var doc = JsonDocument.Parse(m.Payload);
                 var root = doc.RootElement;
                 var op = root.GetProperty("op").GetString();
+                var origin = root.GetProperty("source");
+                Assert.Equal(op is "r" or "l", !origin.TryGetProperty("commit_lsn", out _)); // rows of a load have no place in the commit order
+                Assert.Equal(op is "r" or "l", !origin.TryGetProperty("seq", out _));
+                if (op == "l")
+                {
+                    Assert.Equal("load", root.GetProperty("load").GetProperty("id").GetString());
+                    if (root.GetProperty("load").GetProperty("phase").GetString() == "begin") { Assert.Null(mentioned); Assert.Equal(0, reads); mentioned = []; continue; }
+                    rowsInLoad = root.GetProperty("load").GetProperty("rows").GetInt64();
+                    Assert.Equal(reads, rowsInLoad);
+                    Assert.DoesNotContain(replica.Keys, k => !mentioned!.Contains(k)); // a consumer would remove these
+                    continue;
+                }
+                Assert.False(op == "r" && (mentioned is null || rowsInLoad is not null), "a row of the load outside of its markers");
                 if (op == "r") reads++; else changes++;
                 var image = root.GetProperty(op == "d" ? "before" : "after");
                 var id = image.GetProperty("id").GetInt32();
+                if (op != "d") mentioned?.Add(id);
                 if (op == "d") replica.Remove(id);
                 else replica[id] = (image.GetProperty("v").GetInt32(), image.GetProperty("pad").ValueKind == JsonValueKind.Null ? null : image.GetProperty("pad").GetString());
             }
@@ -90,6 +106,7 @@ public class HistoricalLoadTests
                 while (await r.ReadAsync()) table[r.GetInt32(0)] = (r.GetInt32(1), r.IsDBNull(2) ? null : r.GetString(2));
             }
             Assert.True(ops > 20, $"writers committed only {ops} changes"); // the load is over soon; on a slow disk there were 38
+            Assert.NotNull(rowsInLoad);
             Assert.True(reads > 0 && changes > 0, $"reads={reads} changes={changes}");
             var diff = table.Keys.Union(replica.Keys)
                 .Where(k => !table.TryGetValue(k, out var t) || !replica.TryGetValue(k, out var e) || t != e)

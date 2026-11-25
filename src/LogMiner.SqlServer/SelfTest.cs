@@ -207,6 +207,7 @@ public static class SelfTest
         before = sink.Snapshot().Count;
         for (var i = 0; i < 100 && !load.Done; i++) await PumpAsync(snapshots);
         if (!load.Done || load.Failed) problems.Add($"historical load did not finish: {load.Error}");
+        problems.AddRange(MarkerProblems(sink.Snapshot().Skip(before)));
         problems.AddRange(Differences("typed (historical load)", Replica(sink.Snapshot().Skip(before)).GetValueOrDefault("typed") ?? [], replica.GetValueOrDefault("typed") ?? []).Take(5));
     }
 
@@ -253,6 +254,19 @@ public static class SelfTest
         }
     }
 
+    /// <summary>A load is announced before its first row and concluded behind its last, with their number.</summary>
+    private static IEnumerable<string> MarkerProblems(IEnumerable<SinkMessage> messages)
+    {
+        var what = messages.Select(m =>
+        {
+            using var doc = JsonDocument.Parse(m.Payload);
+            var op = doc.RootElement.GetProperty("op").GetString()!;
+            return op != "l" ? op : doc.RootElement.GetProperty("load").GetProperty("phase").GetString() + (doc.RootElement.GetProperty("load").TryGetProperty("rows", out var n) ? $" {n.GetInt64()}" : "");
+        }).Where(x => x is not ("c" or "u" or "d")).ToList();
+        var rows = what.Count(x => x == "r");
+        if (what.Count != rows + 2 || what[0] != "begin" || what[^1] != $"end {rows}") yield return $"the markers of a historical load are wrong: {string.Join(" ", what.Where(x => x != "r"))}, {rows} rows";
+    }
+
     /// <summary>table → id → column → JSON, after applying the events in order.</summary>
     private static Dictionary<string, Dictionary<string, Dictionary<string, string>>> Replica(IEnumerable<SinkMessage> messages)
     {
@@ -262,6 +276,7 @@ public static class SelfTest
             using var doc = JsonDocument.Parse(m.Payload);
             var root = doc.RootElement;
             var op = root.GetProperty("op").GetString();
+            if (op == "l") continue;
             var image = root.GetProperty(op == "d" ? "before" : "after");
             var table = root.GetProperty("source").GetProperty("table").GetString()!;
             if (!tables.TryGetValue(table, out var rows)) tables[table] = rows = [];

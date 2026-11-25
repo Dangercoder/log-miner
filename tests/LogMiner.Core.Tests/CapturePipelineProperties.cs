@@ -48,6 +48,7 @@ public class CapturePipelineProperties
             "ddl", "ddl-in-transaction", "ddl-rolled-back", "ddl-during-catalog-read", "crash-behind-ddl", "hidden-change",
             "foreign-release", "gap", "resumed-after-truncation", "engine-forgets",
             "checkpoint-while-preparing", "fault-while-preparing", "crash-while-preparing", "nothing-left-of-it", "power-failure-with-loss", "rewound-to-safe",
+            "settled-in-block", "refused-in-block", "load-arrived-whole",
         ];
         var report = string.Join(" | ", Coverage.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}"));
         var missing = required.Where(r => !Coverage.ContainsKey(r)).ToList();
@@ -66,6 +67,27 @@ public class CapturePipelineProperties
         using var m = new PipelineMachine(useSpool, preexisting, finalFailures, maxRows, maxBatch, delayed: tc.Draw(Generators.Booleans(), "delayedRelease"));
         Stateful.Run(m, tc, new StatefulOptions { StepCount = 60 });
         m.Settle();
+    }
+
+    /// <summary>A delete that is gone was never published, and no row of a load says so. Its markers do: what a whole load does not mention is not there.</summary>
+    [Fact]
+    public void Deletes_that_are_gone_are_found_by_the_next_load()
+    {
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0);
+        m.DeletesGoneInAGap(rows: 9, deleted: 3);
+        m.Settle();
+        Assert.Equal(1, m.Gaps);
+        Assert.Equal(3, m.PhantomsFound);
+    }
+
+    /// <summary>Found by the model: the stream began again wherever the log began by then, and nothing said so.</summary>
+    [Fact]
+    public void What_was_lost_before_anything_was_safe_is_reported_when_it_cannot_be_published_again()
+    {
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0, delayed: true);
+        m.LostAndTruncatedInTheFirstSeconds();
+        m.Settle();
+        Assert.Equal(1, m.Gaps);
     }
 
     /// <summary>Found by the model: after a restart the log is re-read from the oldest transaction that was open; what was published before is
@@ -364,7 +386,22 @@ public class CapturePipelineProperties
             return new SnapshotChunk { Table = table, Low = low, High = high, Rows = rows, LastKey = rows.Count == 0 ? null : [rows[^1].Values[0]] };
         }
 
-        private void Append(LogRecord r) => _log.Add(r);
+        /// <summary>A block is closed when it is full or written to disk, and what a read returns is on disk: nothing is added to a block that was read
+        /// (experiments/40).</summary>
+        private void Append(LogRecord r)
+        {
+            if (_blockClosed || _inBlock == 7) { _logBlock++; _inBlock = 0; _blockClosed = false; }
+            _inBlock++;
+            _logBlockOf[r.Lsn] = _logBlock;
+            _log.Add(r);
+        }
+
+        /// <summary>Other activity filled or wrote the block: the next record begins another.</summary>
+        public void CloseBlock() => _blockClosed = true;
+
+        private readonly Dictionary<Lsn, int> _logBlockOf = [];
+        private int _logBlock, _inBlock;
+        private bool _blockClosed;
 
         private Txn? Pick(TestCase tc) =>
             _open.Count == 0 ? null : _open[tc.Draw(Generators.SampledFrom(_open.Keys.Order().ToList()), "txn")];
@@ -534,10 +571,11 @@ public class CapturePipelineProperties
         {
             await Task.Yield();
             var snapshot = _log.ToList();
+            _blockClosed = true;
             if (snapshot.Count == 0) yield break;
-            // like the engine source: behind a settled position the beginning of its log block may be missing (here, up to seven records make a block)
-            if (settled && start is { } s && s < snapshot[0].Lsn && s.Vlf == snapshot[0].Lsn.Vlf && s.Block == snapshot[0].Lsn.Block && s.Slot / 7 == snapshot[0].Lsn.Slot / 7) { Cover("settled-in-block"); start = null; }
-            if (start is { } wanted && wanted < snapshot[0].Lsn) { Cover("truncated-before-read"); throw new LogTruncatedException(wanted, snapshot[0].Lsn); }
+            // like the engine source: behind a settled position the beginning of its log block may be missing
+            if (settled && start is { } s && s < snapshot[0].Lsn && _logBlockOf[s] == _logBlockOf[snapshot[0].Lsn]) { Cover("settled-in-block"); start = null; }
+            if (start is { } wanted && wanted < snapshot[0].Lsn) { Cover(_logBlockOf[wanted] == _logBlockOf[snapshot[0].Lsn] ? "refused-in-block" : "truncated-before-read"); throw new LogTruncatedException(wanted, snapshot[0].Lsn); }
             var from = start ?? snapshot[0].Lsn;
             if (!snapshot.Any(r => r.Lsn == from)) throw new InvalidOperationException($"error 9005: LSN {from} is not in the log");
             var n = 0;
@@ -593,6 +631,8 @@ public class CapturePipelineProperties
 
         public Lsn LastLsn => _log.Count == 0 ? default : _log[^1].Lsn;
         public IReadOnlyList<Lsn> Records => _log.Select(r => r.Lsn).ToList();
+        public Lsn LastReplicatedCommitNot(Func<Lsn, bool> excluded) => _replicatedCommits.LastOrDefault(c => !excluded(c.Commit)).Commit;
+
         public Lsn LastReplicatedCommit => _replicatedCommits.Count == 0 ? default : _replicatedCommits[^1].Commit;
         public void NewTransaction(int rows, bool ddl)
         {
@@ -708,8 +748,8 @@ public class CapturePipelineProperties
             // what the engine does before anything is sent
             if (position?.Receipt is { } receipt && Sync(() => _remote.VerifyAsync(new Dictionary<string, string> { ["db"] = receipt }, CancellationToken.None).AsTask())["db"] == ReceiptState.Lost)
             {
-                Cover(position.Safe is null ? "rewound-to-the-beginning" : "rewound-to-safe");
-                position = position.Rewound() ?? position with { RestartLsn = default, LastCommitLsn = default, LastBeginLsn = default, Held = false, Settled = false, Receipt = null };
+                Cover("rewound-to-safe");
+                position = position.Rewound() ?? throw new Xunit.Sdk.XunitException($"there is no position to go back to: {position}");
                 // what it goes back to is still held by SQL Server, unless somebody else released it
                 Assert.True(!position.Held || _db.ForeignReleases > 0 || _db.ReleasedThrough < position.LastCommitLsn, $"going back to {position.LastCommitLsn}, but {_db.ReleasedThrough} is released");
                 _store.Rewinding = true;
@@ -735,7 +775,7 @@ public class CapturePipelineProperties
             if (!_delayed) return;
             var flush = tc.Draw(Generators.Booleans(), "a checkpoint just before");
             if (flush) Flush();
-            if (_remote.LoseTail(tc.Draw(Generators.Integers().Min(0).Max(12), "lost")) > 0) Cover("power-failure-with-loss");
+            if (_remote.LoseTail(tc.Draw(Generators.Integers().Min(0).Max(12), "lost")) > 0) { Cover("power-failure-with-loss"); _powerFailures++; }
             Crash(tc);
         }
 
@@ -941,6 +981,24 @@ public class CapturePipelineProperties
             if (tc.Draw(Generators.Booleans(), "moreChanges")) _db.CommitNewInsert();
         }
 
+        /// <summary>The log comes to begin inside the block the position is in: nothing is missing when the block was read to its end, and captured
+        /// changes may be when it was not. (Found by a review.)</summary>
+        [Rule]
+        public void LogStartInTheBlockOfThePosition(TestCase tc)
+        {
+            var sw = Stopwatch.StartNew();
+            while (PumpOnce() && sw.Elapsed < TimeSpan.FromMilliseconds(200)) { }
+            _db.CloseBlock();
+            _db.CommitNewInsert();
+            if (tc.Draw(Generators.Booleans(), "moreInTheBlock")) _db.CommitNewInsert();
+            _db.Begin(); // seven records: one block, the last of them keeps the log
+            for (var i = tc.Draw(Generators.Integers().Min(1).Max(3), "reads"); i > 0; i--) PumpOnce();
+            Flush();
+            if (tc.Draw(Generators.Booleans(), "crash")) Crash(tc);
+            _db.ForeignRelease();
+            _db.Truncate();
+        }
+
         public void FaultWhileACheckpointIsSaved()
         {
             _db.CommitNewInsert();
@@ -957,6 +1015,38 @@ public class CapturePipelineProperties
             _store.Open();
             Sync(() => flush);               // the second one is durable
             Flush();
+        }
+
+        public int PhantomsFound { get; private set; }
+
+        /// <summary>Rows are deleted while the miner is down, and that part of the log is released and truncated by somebody else.</summary>
+        public void DeletesGoneInAGap(int rows, int deleted)
+        {
+            for (var i = 0; i < rows; i++) _db.CommitNewInsert();
+            var sw = Stopwatch.StartNew();
+            while (PumpOnce() && sw.Elapsed < TimeSpan.FromSeconds(5)) { }
+            Flush();
+            for (var i = 0; i < deleted; i++) _db.MutateCommittedRow(delete: true);
+            _db.ForeignRelease();
+            _db.UntrackedTransaction();
+            _db.Truncate();
+            _db.CommitNewInsert();
+            _capture = NewCapture();
+        }
+
+        /// <summary>Before anything was safe, somebody else releases the log and then the destination loses what it had acknowledged.</summary>
+        public void LostAndTruncatedInTheFirstSeconds()
+        {
+            _db.CommitNewInsert();
+            PumpOnce();
+            Flush();
+            Assert.NotNull(_capture.Durable);
+            _db.ForeignRelease();
+            _db.UntrackedTransaction();
+            _db.Truncate();
+            Assert.True(_remote.LoseTail(12) > 0);
+            _powerFailures++;
+            _capture = NewCapture();
         }
 
         public void TruncateBeforeTheFirstRead(bool releasedByOthers)
@@ -1029,6 +1119,7 @@ public class CapturePipelineProperties
 
         public int Gaps => _gaps.Count;
         private readonly List<CaptureGap> _gaps = [];
+        private int _powerFailures;
 
         private sealed class GapRecorder(PipelineMachine m) : IGapLog
         {
@@ -1184,18 +1275,20 @@ public class CapturePipelineProperties
                 if (!more) Thread.Sleep(1);
             }
             CheckDelivered(complete: true);
-            if (_gaps.Count == 0 && (_start == StartPosition.Latest || _snapshotCount > 0)) CheckReplica(); // deletes inside a gap are not conveyed
+            if (_gaps.Count > 0 || _start == StartPosition.Latest || _snapshotCount > 0) CheckReplica();
         }
 
         /// <summary>
         /// Applying every delivered event once (stream changes and snapshot rows, in first-delivery order) must reproduce the
         /// committed table: nothing missing (a gap in the historical load) and nothing stale (a snapshot row overwriting a newer change).
+        /// A load's markers say which rows should be there: at the end of a load that arrived whole, a row that was not mentioned since its beginning
+        /// does not exist. Without a gap there is none; behind one, the deletes that were never conveyed are found that way.
         /// </summary>
         private void CheckReplica()
         {
             // make sure one complete historical load ran after the start point (needed when history predates the capture, or was released and
             // truncated by someone else before there was a position to notice it by; a load requested earlier may have died in a crash)
-            if (_start == StartPosition.Latest || _db.GoneBeforeStart.Count > 0)
+            if (_start == StartPosition.Latest || _db.GoneBeforeStart.Count > 0 || _gaps.Count > 0)
             {
                 _db.DuringChunkRead = null;
                 var s = NewSnapshot($"final{++_snapshotCount}", 3);
@@ -1211,22 +1304,46 @@ public class CapturePipelineProperties
             }
             var replica = new SortedDictionary<int, int>();
             var seen = new HashSet<string>();
+            var loads = new Dictionary<string, (HashSet<int> Mentioned, HashSet<int> Loaded)>();
+            var ended = new HashSet<string>();
+            var lossless = _gaps.Count == 0 && _powerFailures == 0;
             foreach (var m in _remote.Stored)
             {
                 if (!seen.Add(m.MessageId)) continue;
                 using var doc = JsonDocument.Parse(m.Payload);
                 var root = doc.RootElement;
                 var op = root.GetProperty("op").GetString();
-                if (op == "l") continue;
+                var load = root.GetProperty("source").TryGetProperty("snapshot", out var x) ? x.GetString() : null;
+                if (op == "l")
+                {
+                    var marker = root.GetProperty("load");
+                    Assert.Equal(load, marker.GetProperty("id").GetString());
+                    if (marker.GetProperty("phase").GetString() == "begin") { loads[load!] = ([], []); continue; }
+                    if (!loads.Remove(load!, out var whole)) { Assert.True(!lossless || ended.Contains(load!), $"load {load} ends without having begun"); continue; }
+                    ended.Add(load!);
+                    if (marker.GetProperty("rows").GetInt64() > whole.Loaded.Count) { Assert.False(lossless, $"load {load}: {marker.GetProperty("rows")} rows were loaded, {whole.Loaded.Count} arrived"); Cover("load-arrived-in-part"); continue; }
+                    var gone = replica.Keys.Where(k => !whole.Mentioned.Contains(k)).ToList();
+                    Assert.True(!lossless || gone.Count == 0, $"load {load} mentions rows {string.Join(",", gone)} neither as loaded nor as changed");
+                    PhantomsFound += gone.Count;
+                    foreach (var k in gone) replica.Remove(k);
+                    Cover("load-arrived-whole");
+                    continue;
+                }
                 var image = root.GetProperty(op == "d" ? "before" : "after");
                 var id = image.GetProperty("id").GetInt32();
-                if (op == "d") replica.Remove(id); else replica[id] = image.GetProperty("v").GetInt32();
+                if (op == "d") { replica.Remove(id); continue; }
+                replica[id] = image.GetProperty("v").GetInt32();
+                foreach (var (_, l) in loads) l.Mentioned.Add(id);
+                if (op != "r") continue;
+                // behind the end: a chunk that was stored, not acknowledged and read again
+                Assert.True(!lossless || loads.ContainsKey(load!) || ended.Contains(load!), $"a row of load {load} before its beginning");
+                if (loads.TryGetValue(load!, out var its)) its.Loaded.Add(id);
             }
             Assert.Equal(string.Join(",", _db.Committed.Select(kv => $"{kv.Key}={kv.Value}")), string.Join(",", replica.Select(kv => $"{kv.Key}={kv.Value}")));
         }
 
         /// <summary>Also of transactions of which nothing is left: what is not acknowledged is not released either, and holds log for ever.</summary>
-        private Lsn LastCommittedLsn() => _db.LastReplicatedCommit;
+        private Lsn LastCommittedLsn() => _db.LastReplicatedCommitNot(InGap);
 
         public void Dispose()
         {

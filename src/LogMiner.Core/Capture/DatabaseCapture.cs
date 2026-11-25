@@ -153,7 +153,8 @@ public sealed class DatabaseCapture
             checkpoint = null;
         }
         _durable = checkpoint;
-        _safe = checkpoint?.Safe;
+        // a position from before there were receipts: what is published from here on can be published again from here
+        _safe = checkpoint?.Safe ?? (checkpoint is { Receipt: null } c ? new SafePosition(c.RestartLsn, c.LastCommitLsn, c.LastBeginLsn, c.Held) : null);
         // Latest, and the end of the log is known: that is the start point, not wherever a catch-up happens to end
         if (checkpoint is null && start == StartPosition.Latest && !holdFrom.IsZero)
             _baseline = new Checkpoint(name, incarnation, default, new Lsn(holdFrom.Vlf, holdFrom.Block, (ushort)(holdFrom.Slot - 1)), default, DateTimeOffset.UtcNow);
@@ -466,7 +467,11 @@ public sealed class DatabaseCapture
                      : _durable ?? _baseline ?? new Checkpoint(Name, Incarnation, default, _ackedCommit, _ackedBegin, DateTimeOffset.UtcNow);
         }
         // nothing was promised yet (and SQL Server was not holding log for us either): start again
-        if (_durable is null && _baseline is null && _progress is null && _rereadFor.IsZero && (!published || EventsPublished == 0) && (_holdFrom.IsZero || truncated.Oldest <= _holdFrom)) return;
+        if (_durable is null && _baseline is null && _progress is null && _rereadFor.IsZero && (!published || EventsPublished == 0) && (_holdFrom.IsZero || truncated.Oldest <= _holdFrom))
+        {
+            lock (_gate) _safe = null;
+            return;
+        }
         var (continuity, detail) = await source.CheckContinuityAsync(Database, position, ct);
         if (continuity != LogContinuity.Intact)
         {
@@ -507,6 +512,8 @@ public sealed class DatabaseCapture
             rows++;
             // Only the start point is durable, and the read began wherever the log begins now. The log has no holes, so it must reach back to that
             // point; otherwise somebody else released it before the first read.
+            if (rows == 1 && _scanFrom is null && _skipThrough.IsZero && !_silent)
+                lock (_gate) if (_durable is null && _baseline is null) _safe ??= new SafePosition(r.Lsn, default, default, false); // this is where the stream begins
             if (rows == 1 && _scanFrom is null && !_skipThrough.IsZero && r.Lsn > new Lsn(_skipThrough.Vlf, _skipThrough.Block, (ushort)(_skipThrough.Slot + 1)))
                 throw new LogTruncatedException(_skipThrough, r.Lsn);
             lock (_gate)

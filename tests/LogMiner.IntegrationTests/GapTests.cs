@@ -15,6 +15,78 @@ public class GapTests
 {
     private const string Ddl = "CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NULL); CREATE TABLE dbo.noise (id int IDENTITY PRIMARY KEY, pad char(4000) NOT NULL);";
 
+    private static async Task<List<string[]>> RowsAsync(string db, string sql)
+    {
+        await using var conn = new SqlConnection(TestServer.ConnectionString(db));
+        await conn.OpenAsync();
+        await using var cmd = new SqlCommand(sql, conn);
+        await using var r = await cmd.ExecuteReaderAsync();
+        var rows = new List<string[]>();
+        while (await r.ReadAsync()) rows.Add([.. Enumerable.Range(0, r.FieldCount).Select(i => r.IsDBNull(i) ? "" : Convert.ToString(r.GetValue(i), System.Globalization.CultureInfo.InvariantCulture)!)]);
+        return rows;
+    }
+
+    /// <summary>The position is the commit of T1, and T2 is in the same log block behind it. While the miner is down somebody releases the log, and an open
+    /// transaction that begins behind T2 in that very block is what the log begins with from then on: T2 is gone, although the block is not. (Found by a
+    /// review: nothing said so.)</summary>
+    [Fact]
+    public async Task A_transaction_that_is_gone_from_the_block_of_the_position_is_reported()
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            await using var h = await CaptureHarness.CreateAsync(Ddl, ["t"]);
+            var holders = new List<SqlConnection>();
+            try
+            {
+                var writers = Task.WhenAll(Enumerable.Range(0, 5).Select(w => Task.Run(async () =>
+                {
+                    await using var conn = new SqlConnection(TestServer.ConnectionString(h.Db) + ";Pooling=false");
+                    await conn.OpenAsync();
+                    for (var i = 0; i < 2500; i++)
+                    {
+                        await using var cmd = new SqlCommand($"INSERT dbo.t VALUES ({w * 100000 + i}, {i})", conn);
+                        await cmd.ExecuteNonQueryAsync();
+                    }
+                })));
+                while (!writers.IsCompleted && holders.Count < 200)
+                {
+                    var conn = new SqlConnection(TestServer.ConnectionString(h.Db) + ";Pooling=false");
+                    await conn.OpenAsync();
+                    holders.Add(conn);
+                    await using var cmd = new SqlCommand("BEGIN TRAN lm_hold; INSERT dbo.noise VALUES ('x');", conn);
+                    await cmd.ExecuteNonQueryAsync();
+                    await Task.Delay(15);
+                }
+                await writers;
+                var found = await RowsAsync(h.Db, """
+                    SELECT [Current LSN] c, [Transaction Begin] b INTO #x FROM sys.fn_dblog(NULL, NULL) WHERE Operation = 'LOP_COMMIT_XACT' AND CONVERT(int, [Flag Bits]) & 4 = 4;
+                    SELECT ROW_NUMBER() OVER (ORDER BY [Current LSN]) - 1 k, [Current LSN] a INTO #h FROM sys.fn_dblog(NULL, NULL) WHERE Operation = 'LOP_BEGIN_XACT' AND [Transaction Name] = 'lm_hold';
+                    SELECT TOP (1) h.k, t1.b, t1.c, (SELECT COUNT(*) FROM #x o WHERE o.c > t1.c)
+                    FROM #h h JOIN #x t2 ON LEFT(t2.c, 17) = LEFT(h.a, 17) AND LEFT(t2.b, 17) = LEFT(h.a, 17) AND t2.c < h.a
+                    JOIN #x t1 ON LEFT(t1.c, 17) = LEFT(h.a, 17) AND t1.c < t2.b
+                    WHERE NOT EXISTS (SELECT 1 FROM #x o WHERE o.b < h.a AND o.c > h.a) AND NOT EXISTS (SELECT 1 FROM #x o WHERE o.b < t1.c AND o.c > t1.c)
+                    ORDER BY h.k, t1.c DESC
+                    """);
+                if (found.Count == 0)
+                {
+                    Assert.True(attempt < 6, "the premise: in no run were two transactions and the beginning of a third in one log block");
+                    continue;
+                }
+                var (k, b1, c1, after) = (int.Parse(found[0][0], System.Globalization.CultureInfo.InvariantCulture), Lsn.Parse(found[0][1]), Lsn.Parse(found[0][2]), int.Parse(found[0][3], System.Globalization.CultureInfo.InvariantCulture));
+                for (var i = 0; i < k; i++) { await using var cmd = new SqlCommand("COMMIT;", holders[i]); await cmd.ExecuteNonQueryAsync(); }
+                await h.Store.SaveAsync([new Checkpoint(h.Db, h.Capture.Incarnation, c1, c1, b1, DateTimeOffset.UtcNow, Held: true)], CancellationToken.None);
+                await h.RestartAsync();
+                await h.SqlAsync("EXEC sys.sp_repldone @xactid = NULL, @xact_seqno = NULL, @numtrans = 0, @time = 0, @reset = 1; EXEC sys.sp_replflush; CHECKPOINT;");
+                for (var i = 0; i < 2; i++) { await TestServer.ExecAsync($"BACKUP LOG [{h.Db}] TO DISK = 'NUL';"); await h.SqlAsync("CHECKPOINT;"); }
+                await h.PumpAllAsync();
+                Assert.True(h.Events().Count() < after, "the premise: something is gone");
+                Assert.Equal(c1, Assert.Single(h.Gaps).AfterCommit);
+                return;
+            }
+            finally { foreach (var c in holders) await c.DisposeAsync(); }
+        }
+    }
+
     private static Task InsertAsync(CaptureHarness h, int id) => h.DmlAsync("c", id, $"INSERT dbo.t (id, v) VALUES ({id}, {id});");
 
     private static async Task<CaptureHarness> LiveAsync()

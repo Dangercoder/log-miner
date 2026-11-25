@@ -84,7 +84,7 @@ public sealed record CaptureGap(string Database, string Incarnation, Lsn AfterCo
 public enum GapPolicy
 {
     /// <summary>Go on with what is there, and load every captured table of the database (or the one table) again: consumers converge on the
-    /// current rows; deletes inside the gap are not conveyed.</summary>
+    /// current rows; deletes inside the gap are found by the load's markers (a whole load mentions every row there is).</summary>
     Resync,
     /// <summary>Go on with what is there.</summary>
     Continue,

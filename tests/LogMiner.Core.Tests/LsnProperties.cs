@@ -50,11 +50,15 @@ public class LsnProperties
     {
         var cp = new LogMiner.Pipeline.Checkpoint("db", "0011-2026", tc.Draw(Lsns, "restart"), tc.Draw(Lsns, "commit"), tc.Draw(Lsns, "begin"),
             DateTimeOffset.FromUnixTimeMilliseconds(tc.Draw(Generators.Longs().Min(0).Max(4_000_000_000_000), "at")), tc.Draw(Generators.Booleans(), "held"),
-            tc.Draw(Lsns, "resumed"), tc.Draw(Generators.Booleans(), "in gap"));
+            tc.Draw(Lsns, "resumed"), tc.Draw(Generators.Booleans(), "in gap"), tc.Draw(Generators.Booleans(), "settled"),
+            tc.Draw(Generators.SampledFrom(new[] { null, "js|CDC|638684|17|srv:db:06E4:00000001:00000002:0003:0", "a|b|%7C|å\n" }), "receipt"),
+            tc.Draw(Generators.Booleans(), "has a safe position") ? new LogMiner.Pipeline.SafePosition(tc.Draw(Lsns, "safe restart"), tc.Draw(Generators.Booleans(), "nothing before it") ? default : tc.Draw(Lsns, "safe commit"), tc.Draw(Lsns, "safe begin"), tc.Draw(Generators.Booleans(), "safe held")) : null);
         var text = cp.Serialize();
         Assert.Equal(cp, LogMiner.Pipeline.Checkpoint.Deserialize("db", text));
-        // files of earlier versions: without ResumedAt, and without Held
+        // files of earlier versions: without what was added last, without ResumedAt, and without Held
         var parts = text.Split('|');
+        Assert.Equal(cp with { Settled = false, Receipt = null, Safe = null }, LogMiner.Pipeline.Checkpoint.Deserialize("db", string.Join('|', parts[..8])));
+        cp = cp with { Settled = false, Receipt = null, Safe = null };
         Assert.Equal(cp with { ResumedAt = default, ResumedInGap = false }, LogMiner.Pipeline.Checkpoint.Deserialize("db", string.Join('|', parts[..6])));
         Assert.Equal(cp with { ResumedAt = default, ResumedInGap = false, Held = false }, LogMiner.Pipeline.Checkpoint.Deserialize("db", string.Join('|', parts[..5])));
         Assert.Throws<FormatException>(() => LogMiner.Pipeline.Checkpoint.Deserialize("db", string.Join('|', parts[..7])));

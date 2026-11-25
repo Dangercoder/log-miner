@@ -132,7 +132,7 @@ internal sealed class CaptureHarness : IAsyncDisposable
         {
             if (!seen.Add(m.MessageId)) continue;
             using var doc = JsonDocument.Parse(m.Payload);
-            yield return doc.RootElement.Clone();
+            if (doc.RootElement.GetProperty("op").GetString() != "l") yield return doc.RootElement.Clone();
         }
     }
 

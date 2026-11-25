@@ -303,6 +303,7 @@ public class EngineRoundTripProperties
                 using var doc = JsonDocument.Parse(m.Payload);
                 var root = doc.RootElement.Clone();
                 var op = root.GetProperty("op").GetString();
+                if (op == "l") continue;
                 var image = root.GetProperty(op == "d" ? "before" : "after");
                 var id = image.GetProperty("id").GetInt32();
                 if (op == "d") _replica.Remove(id);

@@ -18,12 +18,12 @@ public class StreamIntegrityTests
         """;
     private static readonly string[] Tables = ["t", "ix", "h", "doc"];
 
-    private static async Task<List<LogRecord>> ReadAsync(CaptureHarness h, Lsn? start, int maxRows = 1_000_000)
+    private static async Task<List<LogRecord>> ReadAsync(CaptureHarness h, Lsn? start, int maxRows = 1_000_000, bool settled = false)
     {
         await using var conn = new SqlConnection(TestServer.ConnectionString());
         await conn.OpenAsync();
         var records = new List<LogRecord>();
-        await foreach (var r in new EngineLogReader(conn).ReadAsync(h.Capture.Database, start, maxRows, CaptureScope.CdcTrackedTables, CancellationToken.None)) records.Add(r);
+        await foreach (var r in new EngineLogReader(conn).ReadAsync(h.Capture.Database, start, maxRows, CaptureScope.CdcTrackedTables, CancellationToken.None, settled)) records.Add(r);
         return records;
     }
 
@@ -123,8 +123,8 @@ public class StreamIntegrityTests
         Assert.Equal(2, h.Events().Count());
     }
 
-    /// <summary>The oldest record is exact to the slot, a caught-up reader's position is the beginning of a block: in the block of the oldest
-    /// record nothing is missing that is needed.</summary>
+    /// <summary>The oldest record is exact to the slot. Behind the position of a reader that had read the block to its end nothing is missing that is needed;
+    /// behind any other captured changes may be (found by a review: they were skipped silently).</summary>
     [Fact]
     public async Task A_position_in_the_block_of_the_oldest_record_is_still_in_the_log()
     {
@@ -151,8 +151,11 @@ public class StreamIntegrityTests
             oldest = await OldestAsync();
         }
         Assert.True(oldest.Slot > 1, $"the premise: the log begins in the middle of a block ({oldest})");
-        Assert.Equal(oldest, (await ReadAsync(h, new Lsn(oldest.Vlf, oldest.Block, 1)))[0].Lsn);
+        Assert.Equal(oldest, (await ReadAsync(h, new Lsn(oldest.Vlf, oldest.Block, 1), settled: true))[0].Lsn);
+        await Assert.ThrowsAsync<LogTruncatedException>(() => ReadAsync(h, new Lsn(oldest.Vlf, oldest.Block, 1)));
+        await Assert.ThrowsAsync<LogTruncatedException>(() => ReadAsync(h, new Lsn(oldest.Vlf, oldest.Block - 1, 1), settled: true));
         await Assert.ThrowsAsync<LogTruncatedException>(() => ReadAsync(h, new Lsn(oldest.Vlf, oldest.Block - 1, 1)));
+        Assert.Equal(oldest, (await ReadAsync(h, oldest))[0].Lsn);
     }
 
     /// <summary>A replicated transaction of which nothing is left has no events, but SQL Server holds its log until it is released.</summary>

@@ -14,7 +14,9 @@ public class SqlStateStoreTests : IAsyncLifetime
     public async Task InitializeAsync() => await TestServer.ExecAsync($"CREATE DATABASE [{_db}];");
     public async Task DisposeAsync() => await TestServer.DropDatabaseAsync(_db);
 
-    private static Checkpoint Cp(string db, uint block) => new(db, "inc", new Lsn(1, block, 1), new Lsn(1, block + 1, 2), new Lsn(1, block, 1), DateTimeOffset.UtcNow, Held: block % 2 == 0, ResumedAt: block % 3 == 0 ? new Lsn(1, block - 1, 4) : default, ResumedInGap: block % 3 == 0);
+    private static Checkpoint Cp(string db, uint block) => new(db, "inc", new Lsn(1, block, 1), new Lsn(1, block + 1, 2), new Lsn(1, block, 1), DateTimeOffset.UtcNow, Held: block % 2 == 0, ResumedAt: block % 3 == 0 ? new Lsn(1, block - 1, 4) : default, ResumedInGap: block % 3 == 0,
+        Settled: block % 4 == 0, Receipt: block == 20 ? null : $"js|CDC|638684|{block}|srv:db:06E4:{block}:'å",
+        Safe: block == 20 ? null : block == 10 ? new SafePosition(new Lsn(1, 2, 1), default, default, false) : new SafePosition(new Lsn(1, block - 4, 1), new Lsn(1, block - 3, 2), new Lsn(1, block - 4, 3), block % 2 == 0));
 
     [Fact]
     public async Task Checkpoints_round_trip_and_survive_a_new_instance()
@@ -23,8 +25,9 @@ public class SqlStateStoreTests : IAsyncLifetime
         {
             await a.EnsureSchemaAsync(default);
             await a.AcquireLeaseAsync(null, default);
-            await a.SaveAsync([Cp("tenant_1", 10), Cp("tenant_2", 20)], default);
+            await a.SaveAsync([Cp("tenant_1", 10), Cp("tenant_2", 20), Cp("tenant_3", 10), Cp("tenant_4", 50)], default);
             await a.SaveAsync([Cp("tenant_1", 30)], default);
+            await a.SaveAsync([Cp("tenant_4", 20)], default); // nothing of what was there stays
         }
         await using var b = new SqlStateStore(Cs, "srv");
         await b.AcquireLeaseAsync(null, default);
@@ -32,7 +35,10 @@ public class SqlStateStoreTests : IAsyncLifetime
         var t2 = await b.LoadAsync("tenant_2", default);
         Assert.Equal(Cp("tenant_1", 30) with { UpdatedAt = t1!.UpdatedAt }, t1);
         Assert.Equal(Cp("tenant_2", 20) with { UpdatedAt = t2!.UpdatedAt }, t2);
-        Assert.Null(await b.LoadAsync("tenant_3", default));
+        var (t3, t4) = (await b.LoadAsync("tenant_3", default), await b.LoadAsync("tenant_4", default));
+        Assert.Equal(Cp("tenant_3", 10) with { UpdatedAt = t3!.UpdatedAt }, t3);
+        Assert.Equal(Cp("tenant_4", 20) with { UpdatedAt = t4!.UpdatedAt }, t4);
+        Assert.Null(await b.LoadAsync("tenant_9", default));
     }
 
     [Fact]

@@ -598,6 +598,9 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
             else
             {
                 _log.LogCritical("{Database}: {Sink} does not have what it acknowledged, and there is no safe position yet; publishing everything again that SQL Server still holds", name, sink.Name);
+                if (options.Gaps is not null) // all of it, unless somebody else released some
+                    await options.Gaps.RecordAsync(new CaptureGap(name, cp.Incarnation, default, cp.LastCommitLsn, LogContinuity.Unknown, $"the destination ({sink.Name}) lost what it had acknowledged before there was a position to go back to", DateTimeOffset.UtcNow),
+                        options.Settings.OnGap == GapPolicy.Resync, ct);
                 positions[name] = cp with { RestartLsn = default, LastCommitLsn = default, LastBeginLsn = default, Held = false, Settled = false, Receipt = null };
                 back.Add(positions[name]);
             }
