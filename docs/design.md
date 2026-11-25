@@ -124,7 +124,8 @@ before a rebuild and published NULLs for altered columns — nightly index maint
 * **Every change comes under the name its table had when it was made**, whether the miner was there or not, also when the table is gone by now: renames and
   schema transfers are changes in place of the table's row in `sysschobjs`, in one place or in several (`experiments/38`; of those only the old lengths
   are logged), and are undone like the rest. A renamed table is a recorded gap (`Renamed`, with a load by default): its rows were published under the
-  old name. A schema that is gone has no name any more: `schema#<id>`.
+  old name. A schema that is gone has no name any more: `schema#<id>`. (With row versioning or accelerated
+  database recovery a version lies behind the name in those rows: the old end offset says where the old name ended.)
 
 ## 2. Which of 1,200 databases changed? (the "doorbell")
 
@@ -447,6 +448,35 @@ issuing the insert to the consumer receiving the event from JetStream.
 * First start (`Latest`), 1,200 databases: 23–29 s.
 * **Under that load, event session dropped at 10 s, `logminer.exe` killed at 20 s and restarted:** 8,001 of 8,001 events, 0 duplicates. After
   the restart every database reloads its layouts: the first ones are current within a second or two, the last after ~18 s.
+
+### Off the database host (a container, Kubernetes)
+The service is managed code and runs as a Linux container as it is (`Dockerfile`, 223 MB, no shell, not root, read-only root file system; `infra/k8s`). Position,
+gaps, requests and the lease are in SQL Server, so a pod has no volume. *Measured*:
+
+| | p50 | p99 | CPU of `logminer` | of its SQL sessions |
+|---|---|---|---|---|
+| on the host, shared memory (Windows, 1,200 databases, 200 tx/s) | 4.0 ms | 7.5-10 ms | 14.5 % of a core | 5.8 % |
+| TCP with encryption | 4.1 ms | 18 ms | 16 % | 6.3 % |
+| TCP with encryption, SqlClient's managed network layer (the only one on Linux) | 4.7 ms | 15 ms | 21 % | 5.5 % |
+
+* These are on one machine. A network adds about two round trips per event (the push and the read), three with the collection of the push: well under 1-2 ms
+  within a data centre. Across regions it is not what this is for.
+* **Failover** (two pods, the lease in SQL Server; lab, 5 databases under load): `SIGTERM` 0.7-1.5 s, `SIGKILL` 0.6 s, network of the active pod cut **41-43 s**
+  (SQL Server's TCP keep-alive, 30 s by default, has to notice; a setting of the instance). The cut-off pod cannot write a position any more and ends its process.
+  Over all of these and a NATS restart: 34,176 messages, all tables verified by `logminer-verify`, no gap. With 1,200 databases the last one is current
+  ~20 s after a takeover (layouts are read again).
+* **What it needs:** ICU and time zone data in the image (log times are in the server's zone, by its Windows name); TCP enabled; a login. `fn_full_dblog` asks for
+  **`sysadmin`, or `db_owner` in `master`** (`CONTROL SERVER` is not enough, *measured*); without `sysadmin`: `db_owner` in master, in every captured database
+  and in the state database, `VIEW SERVER STATE`, `ALTER ANY EVENT SESSION`, and `SelfTest` run once by somebody who may create databases (or
+  `dbcreator`). That is a credential worth protecting: Kerberos, a vault, or a network policy that lets only these pods to the instance.
+* **What goes over the network** is the content of every captured table: `Encrypt=true` with a certificate that is checked.
+* **What it costs to be off the host:** the round trips; and SQL Server keeps its log while the network is away (as it does while the miner is down).
+  What it gains: the miner's CPU and memory are not the database's, and SQL Server, NATS and the miner do not lose power together.
+* SQL Server *on Linux* announces a block before it is on disk: reads are repeated until it is (section 2), which costs CPU in proportion to how slow its disk is
+  (lab, 20 ms per commit: four reads per event, 65 % of a core at 200 tx/s). On Windows there are none.
+* Memory: `MaxBufferedMb` is per transaction that is buffered; the limit of the pod has to be above it (512 MB and 2 GiB in `infra/k8s`).
+* Probes and metrics: `HealthPort` (`/livez`, `/readyz`, `/metrics`). The standby is ready, too. Liveness fails only for a run that neither works nor ends: what can
+  be started over is started over inside the process.
 
 ## 8. Operations
 

@@ -39,6 +39,8 @@ public sealed class LogMinerSettings
     public RoutingSettings Routing { get; set; } = new();
     public SinkSettings Sink { get; set; } = new();
     public int HealthLogIntervalSeconds { get; set; } = 30;
+    /// <summary>Port for probes and metrics over HTTP (/livez, /readyz, /metrics), e.g. in a pod; 0: none.</summary>
+    public int HealthPort { get; set; }
 }
 
 public enum SelfTestMode

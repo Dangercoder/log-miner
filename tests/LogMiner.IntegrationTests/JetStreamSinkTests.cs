@@ -22,9 +22,7 @@ namespace LogMiner.IntegrationTests;
 #pragma warning disable CA1001
 public sealed class JetStreamSinkTests : IDisposable
 {
-    private static readonly string? Exe = Environment.GetEnvironmentVariable("LOGMINER_NATS_SERVER")
-        ?? (Directory.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "tools", "nats-server"))
-            ? Directory.GetFiles(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "tools", "nats-server"), "nats-server*.exe", SearchOption.AllDirectories).FirstOrDefault() : null);
+    private static readonly string? Exe = Executables.NatsServer;
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "lm-nats-" + Guid.NewGuid().ToString("N"));
     private readonly int _port = FreePort();

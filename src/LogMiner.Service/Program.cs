@@ -19,7 +19,9 @@ builder.Services.Configure<LogMinerSettings>(builder.Configuration.GetSection("L
 builder.Services.AddSingleton<ISinkProvider, NatsJetStreamSinkProvider>();
 builder.Services.AddSingleton<ISinkProvider, FileSinkProvider>();
 builder.Services.AddSingleton<ISinkProvider, NullSinkProvider>();
-builder.Services.AddHostedService<CaptureWorker>();
+builder.Services.AddSingleton<CaptureWorker>();
+builder.Services.AddHostedService(s => s.GetRequiredService<CaptureWorker>());
+builder.Services.AddHostedService<HealthServer>();
 builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(30));
 await builder.Build().RunAsync();
 return Environment.ExitCode;

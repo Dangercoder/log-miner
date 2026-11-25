@@ -58,6 +58,16 @@ On the NATS server set `sync_interval` well below `ReleaseIntervalMs` (`1s`; the
 since the last sync is lost when its host loses power. The miner notices that and publishes it again from SQL Server's log, which has it for
 `ReleaseIntervalMs`.
 
+### In Kubernetes
+
+```bash
+docker build -t logminer .            # 223 MB, not root, read-only file system
+kubectl apply -f infra/k8s/logminer.yaml   # edit it first: connection (a Secret), databases, NATS
+```
+
+Two pods per instance: one captures, the other takes over. No volume is needed. What differs from running on the database host (latency, the rights of the
+login, failover times) is in [docs/design.md](docs/design.md) under *Off the database host*. Probes and metrics are on port 8080 (`LogMiner__HealthPort`).
+
 ## Verify a SQL Server build
 
 The service verifies every new SQL Server version (after a CU) in a scratch database before it captures anything, and refuses to run if

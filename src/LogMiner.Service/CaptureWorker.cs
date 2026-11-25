@@ -14,6 +14,59 @@ namespace LogMiner.Service;
 public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfiguration configuration, IEnumerable<ISinkProvider> providers,
                                   ILoggerFactory loggers, IHostApplicationLifetime lifetime, ILogger<CaptureWorker> log) : BackgroundService
 {
+    private enum Phase { Starting, Standby, Active, Retrying, Stopped }
+    private volatile string _why = "starting";
+    private volatile Phase _phase = Phase.Starting;
+    private long _ticked = System.Diagnostics.Stopwatch.GetTimestamp();
+
+    /// <summary>Why the process should be started again, or null. (Whatever ends a run, the process itself starts the next one; this is for a run that
+    /// neither works nor ends.)</summary>
+    internal string? Stuck => _phase == Phase.Active && System.Diagnostics.Stopwatch.GetElapsedTime(Interlocked.Read(ref _ticked)) is var silent && silent > TimeSpan.FromMinutes(2)
+        ? $"the run has not been heard of for {silent.TotalSeconds:F0} s" : null;
+
+    /// <summary>Why it neither captures nor waits to take over, or null.</summary>
+    internal string? NotReady => _phase is Phase.Active or Phase.Standby ? Stuck : $"{_phase}: {_why}";
+
+    /// <summary>Prometheus text.</summary>
+    internal string Metrics()
+    {
+        var text = new System.Text.StringBuilder();
+        void Metric(string name, string type, string help, double value)
+        {
+            text.Append("# HELP logminer_").Append(name).Append(' ').Append(help).Append('\n').Append("# TYPE logminer_").Append(name).Append(' ').Append(type).Append('\n');
+            text.Append("logminer_").Append(name).Append(' ').Append(value.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+        }
+        var (engine, signal, sink) = (_engine, _signal, _sink);
+        Metric("active", "gauge", "1 while this instance holds the lease and captures", _phase == Phase.Active ? 1 : 0);
+        Metric("standby", "gauge", "1 while this instance waits for the lease", _phase == Phase.Standby ? 1 : 0);
+        if (_phase != Phase.Active || engine is null) return text.ToString();
+        var captures = engine.Captures;
+        Metric("databases", "gauge", "captured databases", captures.Count);
+        Metric("databases_faulted", "gauge", "captured databases whose stream has failed and is tried again", captures.Count(c => c.State == CaptureState.Faulted));
+        Metric("databases_not_opened", "gauge", "included databases that cannot be opened and are not captured", engine.NotOpened.Count);
+        Metric("databases_with_untracked_tables", "gauge", "captured databases with tables that are not CDC-enabled", captures.Count(c => c.UntrackedTables.Count > 0));
+        Metric("events_published_total", "counter", "events acknowledged by the destination since this run began", captures.Sum(c => c.EventsPublished));
+        Metric("gaps_total", "counter", "gaps recorded since this run began (see logminer.dbo.gaps)", captures.Sum(c => c.Gaps));
+        Metric("open_transactions", "gauge", "transactions read and not yet committed", captures.Sum(c => c.OpenTransactions));
+        Metric("foreign_releases", "gauge", "databases whose log somebody else releases", engine.ForeignReleases.Count);
+        Metric("release_blocked", "gauge", "1 while no log is released because the destination does not have what it acknowledged", engine.AuditProblem is null ? 0 : 1);
+        if (captures.Max(c => c.LastPublishedAt) is { } last) Metric("last_published_timestamp_seconds", "gauge", "when the newest event was acknowledged", last.ToUnixTimeMilliseconds() / 1000.0);
+        if (sink is not null)
+        {
+            var h = sink.Health;
+            Metric("sink_healthy", "gauge", "1 while the destination is connected", h.Healthy ? 1 : 0);
+            Metric("sink_pending_messages", "gauge", "messages sent and not acknowledged", h.PendingMessages);
+        }
+        Metric("doorbell_pushing", "gauge", "1 while SQL Server pushes log flushes (0: polling, higher latency)", signal is { Pushing: true } ? 1 : 0);
+        if (signal is not null)
+        {
+            Metric("doorbell_flushes_total", "counter", "pushed log flushes", signal.Pushed);
+            Metric("doorbell_found_by_audit_total", "counter", "log writes the audit found before the push", signal.FoundByAudit);
+        }
+        Metric("early_reads_total", "counter", "reads repeated because a pushed block was not on disk yet", engine.BellRetries);
+        return text.ToString();
+    }
+
     private CaptureEngine? _engine;
     private DoorbellSignal? _signal;
     private ISink? _sink;
@@ -41,6 +94,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
             catch (Exception) when (stoppingToken.IsCancellationRequested) { return; }
             catch (Exception ex)
             {
+                (_phase, _why) = (Phase.Retrying, ex.Message);
                 if (System.Diagnostics.Stopwatch.GetElapsedTime(started) > TimeSpan.FromMinutes(1)) delay = TimeSpan.FromSeconds(1);
                 log.LogCritical(ex, "capture stopped ({Why}); starting over from the last saved position in {Delay} s (SQL Server keeps the log meanwhile)", ex.Message, delay.TotalSeconds);
             }
@@ -57,6 +111,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
 
     private void Stop(int exitCode)
     {
+        (_phase, _why) = (Phase.Stopped, $"exit code {exitCode}");
         Environment.ExitCode = exitCode;
         lifetime.StopApplication();
     }
@@ -104,7 +159,12 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
             var selfTests = new SelfTestLog(stateCs, s.ServerName);
             await selfTests.EnsureSchemaAsync(stoppingToken);
             log.LogInformation("waiting for the lease {Resource} (another instance may be active)", sqlState.Resource);
-            await sqlState.AcquireLeaseAsync(() => log.LogDebug("standby: lease held by another instance"), stoppingToken);
+            await sqlState.AcquireLeaseAsync(() =>
+            {
+                _phase = Phase.Standby;
+                log.LogDebug("standby: lease held by another instance");
+            }, stoppingToken);
+            (_phase, _why) = (Phase.Starting, "lease acquired, starting");
             log.LogInformation("lease acquired: this instance is active");
             if (!await VerifyServerAsync(s, selfTests, stoppingToken)) return false; // under the lease: only one instance uses the scratch database
         }
@@ -154,10 +214,13 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         log.LogInformation("logminer starting: server {Server}, sink {Sink}, scope {Scope}, start {Start}", s.ServerName, _sink.Name, s.Scope, s.StartPosition);
         await _engine.StartAsync(stoppingToken);
         log.LogInformation("capturing {Count} databases", _engine.Captures.Count);
+        Interlocked.Exchange(ref _ticked, System.Diagnostics.Stopwatch.GetTimestamp());
+        _phase = Phase.Active;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
         var lastHealth = DateTimeOffset.UtcNow;
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
+            Interlocked.Exchange(ref _ticked, System.Diagnostics.Stopwatch.GetTimestamp());
             if (_engine.Failure.IsFaulted) await _engine.Failure; // half an engine must not go on looking healthy
             if (_sink.Health is { Failed: true } failed) throw new InvalidOperationException($"the sink failed: {failed.LastError}");
             // fencing: another instance may take over now; checkpoint writes are refused anyway

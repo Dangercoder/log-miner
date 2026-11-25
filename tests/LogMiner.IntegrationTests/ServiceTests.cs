@@ -17,8 +17,7 @@ namespace LogMiner.IntegrationTests;
 /// <summary>The real logminer.exe, its databases and its NATS server: whatever is taken away, it comes back by itself and nothing is missing.</summary>
 public sealed class ServiceTests : IAsyncLifetime, IDisposable
 {
-    private static readonly string? Nats = Directory.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "tools", "nats-server"))
-        ? Directory.GetFiles(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "tools", "nats-server"), "nats-server*.exe", SearchOption.AllDirectories).FirstOrDefault() : null;
+    private static readonly string? Nats = Executables.NatsServer;
 
     private readonly string _tag = Guid.NewGuid().ToString("N")[..8];
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "lm-svc-" + Guid.NewGuid().ToString("N"));
@@ -58,7 +57,7 @@ public sealed class ServiceTests : IAsyncLifetime, IDisposable
 
     private void StartService(params (string Key, string Value)[] more)
     {
-        var info = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "logminer.exe")) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true, WorkingDirectory = _dir };
+        var info = new ProcessStartInfo(Executables.Service) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true, WorkingDirectory = _dir };
         (string, string)[] settings =
         [
             ("ServerName", "svc-" + _tag), ("ConnectionString", TestServer.ConnectionString()), ("Databases__0", $"lm_it_svc_{_tag}_*"), ("State__Database", State), ("SelfTest", "Off"),
@@ -73,6 +72,61 @@ public sealed class ServiceTests : IAsyncLifetime, IDisposable
     }
 
     private string Output { get { lock (_output) return _output.ToString(); } }
+
+    private static async Task<(int Status, string Body)> GetAsync(int port, string path)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        try { using var r = await http.GetAsync(new Uri($"http://127.0.0.1:{port}{path}")); return ((int)r.StatusCode, await r.Content.ReadAsStringAsync()); }
+        catch (HttpRequestException ex) { return (0, ex.Message); }
+    }
+
+    private static async Task<string> UntilAsync(int port, string path, int status, string what, string says = "")
+    {
+        (int Status, string Body) got = (0, "");
+        for (var i = 0; i < 200; i++)
+        {
+            got = await GetAsync(port, path);
+            if (got.Status == status && got.Body.Contains(says, StringComparison.Ordinal)) return got.Body;
+            await Task.Delay(100);
+        }
+        Assert.Fail($"{what}: {path} is {got.Status}: {got.Body}");
+        return "";
+    }
+
+    /// <summary>What a pod's probes see: not ready while the destination is not there, ready as the active and as the standby one.</summary>
+    [Fact]
+    public async Task Probes_and_metrics()
+    {
+        if (Nats is null) return;
+        var (port, other) = (FreePort(), FreePort());
+        StartService(("HealthPort", port.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        await UntilAsync(port, "/readyz", 503, "no destination", "Retrying");
+        Assert.Equal(200, (await GetAsync(port, "/livez")).Status); // starting it again would not help
+        StartNats();
+        await UntilAsync(port, "/readyz", 200, "active");
+        await InsertAsync(1);
+        await ArrivedAsync(1);
+        var metrics = (await GetAsync(port, "/metrics")).Body;
+        foreach (var line in new[] { "logminer_active 1", "logminer_standby 0", "logminer_databases 3", "logminer_events_published_total 1", "logminer_gaps_total 0", "logminer_sink_healthy 1" })
+            Assert.Contains(line + "\n", metrics, StringComparison.Ordinal);
+        var active = _service!;
+        StartService(("HealthPort", other.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        await UntilAsync(other, "/readyz", 200, "standby");
+        Assert.Contains("logminer_standby 1\n", (await GetAsync(other, "/metrics")).Body, StringComparison.Ordinal);
+        active.Kill();
+        await active.WaitForExitAsync();
+        active.Dispose();
+        for (var i = 0; i < 300 && !(await GetAsync(other, "/metrics")).Body.Contains("logminer_active 1\n", StringComparison.Ordinal); i++) await Task.Delay(100);
+        Assert.Contains("logminer_active 1\n", (await GetAsync(other, "/metrics")).Body, StringComparison.Ordinal);
+        await InsertAsync(2);
+        await ArrivedAsync(2);
+        Assert.Equal(404, (await GetAsync(other, "/")).Status);
+        // whoever connects and says nothing does not keep others from being answered
+        var silent = new List<TcpClient>();
+        for (var i = 0; i < 40; i++) { var c = new TcpClient(); await c.ConnectAsync(IPAddress.Loopback, other); silent.Add(c); }
+        Assert.Equal(200, (await GetAsync(other, "/livez")).Status);
+        silent.ForEach(c => c.Dispose());
+    }
 
     private async Task InsertAsync(int id) => await TestServer.ExecAsync($"INSERT dbo.t VALUES ({id}, {id})", _databases[id % 3]);
 
