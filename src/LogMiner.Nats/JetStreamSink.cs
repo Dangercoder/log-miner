@@ -35,6 +35,10 @@ public sealed class JetStreamSinkOptions
 /// everything in it, and a new one is opened; meanwhile every send fails at once.</para>
 /// <para><b>Acknowledgement.</b> Only a PubAck that names the configured stream and a sequence number counts (a subscriber that happens to answer
 /// does not, nor does another stream that captures the subject).</para>
+/// <para><b>What it had acknowledged may be gone.</b> A server acknowledges what is in memory and syncs later (sync_interval); after a power loss the end
+/// of the stream is missing. Every new connection is checked against the newest message that was acknowledged before anything is sent over it; when
+/// that is gone the sink fails for good (<see cref="SinkHealth.Failed"/>), and whoever starts it again goes back first (<see cref="VerifyAsync"/>).
+/// Otherwise newer messages would take the sequence numbers of the lost ones, and lie before their repetition.</para>
 /// <para><b>Idempotency.</b> Nats-Msg-Id = <see cref="SinkMessage.MessageId"/>, so resends inside the duplicate window are
 /// dropped by the server.</para>
 /// </summary>
@@ -57,8 +61,10 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
 
     private readonly Lock _gate = new();
     private readonly CancellationTokenSource _stop = new();
-    private readonly ConcurrentDictionary<string, (ulong Seq, string Id)> _acked = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (ulong Seq, string Id, DateTimeOffset At)> _acked = new(StringComparer.Ordinal);
+    private (ulong Seq, string Id) _newest; // of all databases
     private Connection? _current;
+    private volatile string? _failed;
     private Task? _reconnecting;
     private DateTimeOffset? _streamCreated;
     private long _duplicates, _connections;
@@ -75,7 +81,7 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
         get
         {
             var c = _current;
-            return new SinkHealth(Name, c is { Broken: false }, c?.Queued ?? 0, 0, null, _lastError, _lastErrorAt);
+            return new SinkHealth(Name, _failed is null && c is { Broken: false }, c?.Queued ?? 0, 0, null, _failed ?? _lastError, _lastErrorAt, _failed is not null);
         }
     }
 
@@ -88,34 +94,73 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
     public ValueTask<Task> SendAsync(IReadOnlyList<SinkMessage> messages, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_stop.IsCancellationRequested, this);
+        if (_failed is { } why) throw new IOException(why);
         var c = _current ?? throw new InvalidOperationException("sink not started");
         return ValueTask.FromResult(c.Send(messages));
     }
 
-    /// <summary>Does the stream hold what it acknowledged? Asked before SQL Server may give up its log.</summary>
-    public async ValueTask<string?> AuditAsync(IReadOnlyCollection<string> databases, CancellationToken ct)
+    /// <summary>Does the stream hold what it acknowledged? Asked before SQL Server may give up its log. What has expired since (the stream's MaxAge)
+    /// is not missing; what was purged or deleted before is.</summary>
+    public async ValueTask<IReadOnlyDictionary<string, string>> AuditAsync(IReadOnlyCollection<string> databases, CancellationToken ct)
     {
+        Dictionary<string, string> All(string problem) => databases.ToDictionary(d => d, _ => problem, StringComparer.Ordinal);
+        if (_failed is { } why) return All(why);
         var c = _current;
-        if (c is null or { Broken: true }) return $"not connected to the stream {options.StreamName}";
-        var js = new NatsJSContext(c.Nats);
-        var stream = await js.GetStreamAsync(options.StreamName, cancellationToken: ct);
-        if (_streamCreated is { } created && stream.Info.Created != created) return $"the stream {options.StreamName} was deleted and created again ({stream.Info.Created:O}); what was published before is gone";
+        if (c is null or { Broken: true }) return All($"not connected to the stream {options.StreamName}");
+        var stream = await new NatsJSContext(c.Nats).GetStreamAsync(options.StreamName, cancellationToken: ct);
+        if (_streamCreated is { } created && stream.Info.Created != created) return All($"the stream {options.StreamName} was deleted and created again ({stream.Info.Created:O}); what was published before is gone");
+        var problems = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var db in databases)
         {
             if (!_acked.TryGetValue(db, out var last)) continue;
-            if (last.Seq > stream.Info.State.LastSeq) return $"the stream {options.StreamName} ends at {stream.Info.State.LastSeq}, but acknowledged {last.Seq} ({last.Id}): it lost acknowledged messages";
-            try
+            if (stream.Info.Config.MaxAge is { Ticks: > 0 } age && DateTimeOffset.UtcNow - last.At > age) continue;
+            switch (await StateAsync(stream, last.Seq, last.Id, ct))
             {
-                var got = await stream.GetAsync(new StreamMsgGetRequest { Seq = last.Seq }, ct);
-                var headers = got.Message.Hdrs is null ? "" : Encoding.UTF8.GetString(Convert.FromBase64String(got.Message.Hdrs));
-                if (!headers.Contains($"Nats-Msg-Id: {last.Id}\r\n", StringComparison.Ordinal)) return $"message {last.Seq} of the stream {options.StreamName} is not {last.Id}, which was acknowledged as such";
-            }
-            catch (NatsJSApiException ex) when (ex.Error.Code == 404)
-            {
-                return $"the stream {options.StreamName} does not hold message {last.Seq} ({last.Id}) any more, which it acknowledged (purged, or beyond its limits)";
+                case MessageState.Beyond: problems[db] = $"the stream {options.StreamName} ends at {stream.Info.State.LastSeq}, but acknowledged {last.Seq} ({last.Id}): it lost acknowledged messages"; break;
+                case MessageState.Other: problems[db] = $"message {last.Seq} of the stream {options.StreamName} is not {last.Id}, which was acknowledged as such"; break;
+                case MessageState.Gone: problems[db] = $"the stream {options.StreamName} does not hold message {last.Seq} ({last.Id}) any more, which it acknowledged (purged, or beyond its limits)"; break;
             }
         }
-        return null;
+        return problems;
+    }
+
+    private enum MessageState { There, Gone, Beyond, Other }
+
+    private static async Task<MessageState> StateAsync(INatsJSStream stream, ulong seq, string id, CancellationToken ct)
+    {
+        if (seq > stream.Info.State.LastSeq) return MessageState.Beyond;
+        if (seq < stream.Info.State.FirstSeq) return MessageState.Gone;
+        try
+        {
+            var got = await stream.GetAsync(new StreamMsgGetRequest { Seq = seq }, ct);
+            var headers = got.Message.Hdrs is null ? "" : Encoding.UTF8.GetString(Convert.FromBase64String(got.Message.Hdrs));
+            return headers.Contains($"Nats-Msg-Id: {id}\r\n", StringComparison.Ordinal) ? MessageState.There : MessageState.Other;
+        }
+        catch (NatsJSApiException ex) when (ex.Error.Code == 404) { return MessageState.Gone; }
+    }
+
+    /// <summary>Stream, when it was created, sequence and id of the newest message acknowledged of the database.</summary>
+    public string? ReceiptOf(string database) => _streamCreated is { } created && _acked.TryGetValue(database, out var last)
+        ? string.Join('|', "js", Uri.EscapeDataString(options.StreamName), created.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture), last.Seq.ToString(System.Globalization.CultureInfo.InvariantCulture), last.Id) : null;
+
+    public async ValueTask<IReadOnlyDictionary<string, ReceiptState>> VerifyAsync(IReadOnlyDictionary<string, string> receipts, CancellationToken ct)
+    {
+        var c = _current ?? throw new InvalidOperationException("sink not started");
+        var stream = await new NatsJSContext(c.Nats).GetStreamAsync(options.StreamName, cancellationToken: ct);
+        var states = new ConcurrentDictionary<string, ReceiptState>(StringComparer.Ordinal);
+        await Parallel.ForEachAsync(receipts, new ParallelOptions { MaxDegreeOfParallelism = 16, CancellationToken = ct }, async (receipt, token) =>
+        {
+            var p = receipt.Value.Split('|', 5);
+            if (p.Length != 5 || p[0] != "js" || !long.TryParse(p[2], out var created) || !ulong.TryParse(p[3], out var seq)) { states[receipt.Key] = ReceiptState.Unknown; return; }
+            if (p[1] != Uri.EscapeDataString(options.StreamName) || created != stream.Info.Created.UtcTicks) { states[receipt.Key] = ReceiptState.OtherDestination; return; }
+            states[receipt.Key] = await StateAsync(stream, seq, p[4], token) switch
+            {
+                MessageState.There => ReceiptState.Present, MessageState.Gone => ReceiptState.Unknown, _ => ReceiptState.Lost,
+            };
+            // from now on every new connection is checked against it, too: it may be in memory only
+            if (states[receipt.Key] == ReceiptState.Present) lock (_gate) if (seq > _newest.Seq) _newest = (seq, p[4]);
+        });
+        return states;
     }
 
     private void Note(Exception ex)
@@ -155,7 +200,6 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
                     Description = "logminer change events (SQL Server transaction log)",
                 }, ct);
             }
-            if (_streamCreated is { } created && stream.Info.Created != created) Note(new NatsJSException($"the stream {options.StreamName} was deleted and created again; what was published before is gone"));
             _streamCreated ??= stream.Info.Created;
             var limit = Math.Min(nats.ServerInfo?.MaxPayload is > 0 and var server ? server : long.MaxValue, stream.Info.Config.MaxMsgSize is > 0 and var size ? size : long.MaxValue);
             Interlocked.Exchange(ref _maxPayload, limit == long.MaxValue ? limit : Math.Max(1024, limit - 8192));
@@ -192,6 +236,16 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
             try
             {
                 var c = await ConnectAsync(_stop.Token);
+                string? lost;
+                try { lost = await WentBackAsync(c, _stop.Token); }
+                catch { await c.DisposeAsync(); throw; }
+                if (lost is not null)
+                {
+                    _failed = lost;
+                    Note(new NatsJSException(lost));
+                    await c.DisposeAsync();
+                    return;
+                }
                 lock (_gate)
                 {
                     if (!_stop.IsCancellationRequested) { _current = c; return; }
@@ -204,6 +258,18 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
             try { await Task.Delay(wait, _stop.Token); } catch (OperationCanceledException) { return; }
             wait = TimeSpan.FromMilliseconds(Math.Min(5000, wait.TotalMilliseconds * 2));
         }
+    }
+
+    /// <summary>Before anything is sent over a new connection: a stream that does not have what it acknowledged last has lost the end of itself.</summary>
+    private async Task<string?> WentBackAsync(Connection c, CancellationToken ct)
+    {
+        (ulong Seq, string Id) newest;
+        lock (_gate) newest = _newest;
+        if (newest.Seq == 0) return null;
+        var stream = await new NatsJSContext(c.Nats).GetStreamAsync(options.StreamName, cancellationToken: ct);
+        if (_streamCreated is { } created && stream.Info.Created != created) return $"the stream {options.StreamName} was deleted and created again ({stream.Info.Created:O}); what was published before is gone";
+        return await StateAsync(stream, newest.Seq, newest.Id, ct) is MessageState.Beyond or MessageState.Other
+            ? $"the stream {options.StreamName} (which ends at {stream.Info.State.LastSeq}) does not have message {newest.Seq} ({newest.Id}) any more: it lost what it had acknowledged" : null;
     }
 
     private static async Task CloseAsync(NatsConnection nats)
@@ -386,7 +452,8 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
                     {
                         if (!_awaiting.TryRemove(id, out _)) continue;
                         if (duplicate) Interlocked.Increment(ref _sink._duplicates);
-                        if (item.Message.Database is { } db) _sink._acked[db] = (seq, item.Message.MessageId);
+                        lock (_sink._gate) if (seq > _sink._newest.Seq) _sink._newest = (seq, item.Message.MessageId);
+                        if (item.Message.Database is { } db) _sink._acked[db] = (seq, item.Message.MessageId, DateTimeOffset.UtcNow);
                         Acknowledged(item);
                     }
                     else if (_awaiting.TryRemove(id, out _)) Fail(item.Lane, new NatsJSException(problem));

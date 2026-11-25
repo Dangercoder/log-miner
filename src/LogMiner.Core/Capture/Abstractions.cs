@@ -29,8 +29,9 @@ public interface ILogSource
     /// <summary>Records from <paramref name="start"/> (inclusive; null = oldest available), in LSN order, at most <paramref name="maxRows"/>.
     /// A start that is no longer in the log raises <see cref="LogTruncatedException"/>; it is never moved silently. When it was another
     /// database's log, or becomes it meanwhile, <see cref="DatabaseChangedException"/> is raised after the last record at the latest:
-    /// nothing that was read may be used before the enumeration has ended (or <see cref="VerifyAsync"/> has answered).</summary>
-    IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, CancellationToken ct);
+    /// nothing that was read may be used before the enumeration has ended (or <see cref="VerifyAsync"/> has answered).
+    /// <paramref name="settled"/>: see <see cref="Pipeline.Checkpoint.Settled"/>; only then may the beginning of its log block be missing.</summary>
+    IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, CancellationToken ct, bool settled = false);
 
     /// <summary>The last read ended before captured changes that exist and are not on disk yet (they are not read before they are).</summary>
     bool Unhardened => false;

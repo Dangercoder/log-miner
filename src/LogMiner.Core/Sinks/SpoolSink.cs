@@ -109,7 +109,10 @@ public sealed class SpoolSink : ISink
 
     public string Name => $"spool({_inner.Name})";
     public long MaxPayloadBytes => Math.Min(_inner.MaxPayloadBytes, SpoolCodec.MaxBodySize / 2);
-    public ValueTask<string?> AuditAsync(IReadOnlyCollection<string> databases, CancellationToken ct) => _inner.AuditAsync(databases, ct);
+    public ValueTask<IReadOnlyDictionary<string, string>> AuditAsync(IReadOnlyCollection<string> databases, CancellationToken ct) => _inner.AuditAsync(databases, ct);
+    // what was only spooled has no receipt of the destination's yet
+    public string? ReceiptOf(string database) => _o.AckOn == SpoolAck.Delivered ? _inner.ReceiptOf(database) : null;
+    public ValueTask<IReadOnlyDictionary<string, ReceiptState>> VerifyAsync(IReadOnlyDictionary<string, string> receipts, CancellationToken ct) => _inner.VerifyAsync(receipts, ct);
     public long DurableSeq => Interlocked.Read(ref _durableSeq);
     public long DeliveredSeq => Interlocked.Read(ref _deliveredSeq);
     public long LastSeq { get { lock (_appendLock) return _nextSeq - 1; } }

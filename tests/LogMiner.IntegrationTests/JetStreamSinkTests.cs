@@ -5,7 +5,10 @@ using System.Text;
 using Hegel;
 using Hegel.Xunit;
 using LogMiner.Nats;
+using LogMiner.Capture;
+using LogMiner.Pipeline;
 using LogMiner.Sinks;
+using LogMiner.SqlServer;
 using LogMiner.Tests;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
@@ -127,7 +130,7 @@ public sealed class JetStreamSinkTests : IDisposable
         Assert.Equal(10, sink.Duplicates);
         var stored = await StoredAsync();
         for (var k = 0; k < 3; k++) Assert.Equal(Enumerable.Range(0, 60).Where(i => i % 3 == k).Select(i => "m" + i), stored.Where(s => int.Parse(s.Id[1..], System.Globalization.CultureInfo.InvariantCulture) % 3 == k).Select(s => s.Id));
-        Assert.Null(await sink.AuditAsync(["db0", "db1", "db2", "never seen"], CancellationToken.None));
+        Assert.Empty(await sink.AuditAsync(["db0", "db1", "db2", "never seen"], CancellationToken.None));
     }
 
     /// <summary>The server goes away between two messages of a call. What was on its way must not turn up after it is back, behind newer
@@ -190,9 +193,14 @@ public sealed class JetStreamSinkTests : IDisposable
         Assert.NotNull(await AuditOrErrorAsync(sink));
         try { await new NatsJSContext(nats).CreateStreamAsync(new StreamConfig("T", ["cdc.>"])); }
         catch (NatsJSApiException) { } // the sink was faster
-        await SendUntilAsync(sink, Msg("second"), Msg("third")); // the sink is none the worse for it
-        Assert.Equal(["second", "third"], (await StoredAsync()).Select(s => s.Id));
+        // another stream: this sink is done with, and the next one is told by the receipt
+        for (var i = 0; i < 200 && !sink.Health.Failed; i++) await Task.Delay(50);
         Assert.Contains("deleted and created again", await AuditOrErrorAsync(sink), StringComparison.Ordinal);
+        await using var next = Sink();
+        await next.StartAsync(CancellationToken.None);
+        Assert.Equal(ReceiptState.OtherDestination, (await next.VerifyAsync(new Dictionary<string, string> { ["db"] = sink.ReceiptOf("db")! }, CancellationToken.None))["db"]);
+        await SendUntilAsync(next, Msg("second"), Msg("third"));
+        Assert.Equal(["second", "third"], (await StoredAsync()).Select(s => s.Id));
     }
 
     /// <summary>A subscriber that answers, too (perhaps first), does not keep the stream's acknowledgement from counting.</summary>
@@ -220,7 +228,7 @@ public sealed class JetStreamSinkTests : IDisposable
 
     private static async Task<string?> AuditOrErrorAsync(JetStreamSink sink)
     {
-        try { return await sink.AuditAsync(["db"], CancellationToken.None); }
+        try { return (await sink.AuditAsync(["db"], CancellationToken.None)).Values.FirstOrDefault(); }
         catch (NatsException ex) { return ex.Message; }
     }
 
@@ -232,12 +240,120 @@ public sealed class JetStreamSinkTests : IDisposable
         await using var sink = Sink();
         await sink.StartAsync(CancellationToken.None);
         await SendAsync(sink, Msg("a"), Msg("b"));
-        Assert.Null(await sink.AuditAsync(["db"], CancellationToken.None));
+        Assert.Empty(await sink.AuditAsync(["db"], CancellationToken.None));
         await using var nats = new NatsConnection(new NatsOpts { Url = Url });
         await (await new NatsJSContext(nats).GetStreamAsync("T")).PurgeAsync(new StreamPurgeRequest());
-        Assert.Contains("does not hold", await sink.AuditAsync(["db"], CancellationToken.None), StringComparison.Ordinal);
+        Assert.Contains("does not hold", (await sink.AuditAsync(["db", "other"], CancellationToken.None))["db"], StringComparison.Ordinal);
         await SendAsync(sink, Msg("c"));
-        Assert.Null(await sink.AuditAsync(["db"], CancellationToken.None));
+        Assert.Empty(await sink.AuditAsync(["db"], CancellationToken.None));
+    }
+
+    /// <summary>What has expired is not missing, and what is wrong with one database does not concern the others.</summary>
+    [Fact]
+    public async Task An_audit_does_not_miss_what_has_expired()
+    {
+        if (Exe is null) return;
+        await StartServerAsync();
+        await using var sink = new JetStreamSink(new JetStreamSinkOptions { Url = Url, StreamName = "T", MaxAge = TimeSpan.FromSeconds(2), DuplicateWindow = TimeSpan.FromSeconds(1) });
+        await sink.StartAsync(CancellationToken.None);
+        await SendAsync(sink, Msg("quiet", "quiet"));
+        await Task.Delay(1500);
+        await SendAsync(sink, Msg("busy", "busy"));
+        Assert.Empty(await sink.AuditAsync(["quiet", "busy"], CancellationToken.None));
+        await Task.Delay(1000);
+        Assert.Empty(await sink.AuditAsync(["quiet", "busy"], CancellationToken.None)); // expired
+        await using var nats = new NatsConnection(new NatsOpts { Url = Url });
+        await (await new NatsJSContext(nats).GetStreamAsync("T")).PurgeAsync(new StreamPurgeRequest());
+        Assert.Equal(["busy"], (await sink.AuditAsync(["quiet", "busy"], CancellationToken.None)).Keys);
+    }
+
+    /// <summary>The receipt of the newest message, shown to the stream by another process later.</summary>
+    [Fact]
+    public async Task A_receipt_says_whether_the_stream_went_back()
+    {
+        if (Exe is null) return;
+        await StartServerAsync();
+        string a, b;
+        await using (var sink = Sink())
+        {
+            await sink.StartAsync(CancellationToken.None);
+            Assert.Null(sink.ReceiptOf("db"));
+            await SendAsync(sink, Msg("a"));
+            a = sink.ReceiptOf("db")!;
+        }
+        StopServer();
+        var copy = _dir + "-copy";
+        CopyDirectory(_dir, copy);
+        await StartServerAsync();
+        async Task<ReceiptState> StateAsync(string receipt, string stream = "T")
+        {
+            await using var sink = new JetStreamSink(new JetStreamSinkOptions { Url = Url, StreamName = stream, StreamSubjects = [stream == "T" ? "cdc.>" : "other.>"] });
+            await sink.StartAsync(CancellationToken.None);
+            return (await sink.VerifyAsync(new Dictionary<string, string> { ["db"] = receipt }, CancellationToken.None))["db"];
+        }
+        await using (var sink = Sink())
+        {
+            await sink.StartAsync(CancellationToken.None);
+            await SendAsync(sink, Msg("b|with a separator and a %"));
+            b = sink.ReceiptOf("db")!;
+        }
+        Assert.Equal((ReceiptState.Present, ReceiptState.Present), (await StateAsync(a), await StateAsync(b)));
+        Assert.Equal(ReceiptState.OtherDestination, await StateAsync(a, "OTHER"));
+        Assert.Equal(ReceiptState.Unknown, await StateAsync("something else"));
+        StopServer();
+        Directory.Delete(_dir, recursive: true);
+        Directory.Move(copy, _dir);
+        await StartServerAsync();
+        Assert.Equal((ReceiptState.Present, ReceiptState.Lost), (await StateAsync(a), await StateAsync(b)));
+        await using (var sink = Sink())
+        {
+            await sink.StartAsync(CancellationToken.None);
+            await SendAsync(sink, Msg("c")); // takes b's sequence number
+        }
+        Assert.Equal((ReceiptState.Present, ReceiptState.Lost), (await StateAsync(a), await StateAsync(b)));
+        await using var nats = new NatsConnection(new NatsOpts { Url = Url });
+        var js = new NatsJSContext(nats);
+        await (await js.GetStreamAsync("T")).PurgeAsync(new StreamPurgeRequest());
+        Assert.Equal(ReceiptState.Unknown, await StateAsync(a));
+        await js.DeleteStreamAsync("T");
+        Assert.Equal(ReceiptState.OtherDestination, await StateAsync(a));
+    }
+
+    /// <summary>A receipt of an earlier process that was verified: from then on every new connection is checked against it, too.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_stream_that_goes_back_behind_a_verified_receipt_is_noticed(bool goesBack)
+    {
+        if (Exe is null) return;
+        await StartServerAsync();
+        async Task<string> SendAndCloseAsync(string id)
+        {
+            await using var s = Sink();
+            await s.StartAsync(CancellationToken.None);
+            await SendAsync(s, Msg(id));
+            return s.ReceiptOf("db")!;
+        }
+        await SendAndCloseAsync("a");
+        StopServer();
+        var before = _dir + "-before";
+        CopyDirectory(_dir, before);
+        await StartServerAsync();
+        var receipt = await SendAndCloseAsync("b");
+        await using var sink = Sink();
+        await sink.StartAsync(CancellationToken.None);
+        Assert.Equal(ReceiptState.Present, (await sink.VerifyAsync(new Dictionary<string, string> { ["db"] = receipt }, CancellationToken.None))["db"]);
+        StopServer();
+        if (goesBack)
+        {
+            Directory.Delete(_dir, recursive: true);
+            Directory.Move(before, _dir);
+        }
+        await StartServerAsync();
+        for (var i = 0; i < 200 && !sink.Health.Failed && !sink.Health.Healthy; i++) await Task.Delay(50);
+        Assert.Equal(goesBack, sink.Health.Failed);
+        if (!goesBack) await SendUntilAsync(sink, Msg("c"));
+        Assert.Equal(goesBack ? ["a"] : ["a", "b", "c"], (await StoredAsync()).Select(m => m.Id));
     }
 
     /// <summary>The power fails on the NATS host and unsynced messages are gone.</summary>
@@ -258,8 +374,77 @@ public sealed class JetStreamSinkTests : IDisposable
         Directory.Delete(_dir, recursive: true);
         Directory.Move(copy, _dir);
         await StartServerAsync();
-        for (var i = 0; i < 100 && !sink.Health.Healthy; i++) await Task.Delay(50);
-        Assert.Contains("lost acknowledged messages", await sink.AuditAsync(["db"], CancellationToken.None), StringComparison.Ordinal);
+        // nothing is sent over the new connection: it would take the place of what was lost
+        for (var i = 0; i < 200 && !sink.Health.Failed; i++)
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => SendAsync(sink, Msg("d")));
+            await Task.Delay(50);
+        }
+        Assert.True(sink.Health.Failed);
+        await Assert.ThrowsAnyAsync<Exception>(() => SendAsync(sink, Msg("d")));
+        Assert.Contains("lost what it had acknowledged", (await sink.AuditAsync(["db"], CancellationToken.None))["db"], StringComparison.Ordinal);
+        Assert.Equal([("a", "a")], await StoredAsync());
+    }
+
+    /// <summary>SQL Server, NATS (one replica) and the miner on one host; the power fails between two syncs of NATS. The position (durable at once) is
+    /// behind rows 4 and 5, the stream (durable at the next sync) is not. Found by a review: they were lost, and nothing said so.</summary>
+    [Fact]
+    public async Task What_the_stream_lost_in_a_power_failure_is_published_again()
+    {
+        if (Exe is null) return;
+        await StartServerAsync();
+        var db = await TestServer.CreateDatabaseAsync("CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NOT NULL);", "t");
+        var copy = _dir + "-copy";
+        try
+        {
+            var store = new MemoryCheckpointStore();
+            async Task<(CaptureEngine Engine, JetStreamSink Sink)> RunAsync()
+            {
+                var sink = Sink();
+                var engine = new CaptureEngine(new CaptureOptions
+                {
+                    ConnectionString = TestServer.ConnectionString(), DatabaseFilter = n => n == db, Workers = 1, CheckpointInterval = TimeSpan.FromMilliseconds(50), ReleaseInterval = TimeSpan.FromSeconds(2),
+                    Settings = new CaptureSettings { StartPosition = StartPosition.Latest }, SweepInterval = TimeSpan.FromSeconds(1), HoldCheckInterval = TimeSpan.FromHours(1),
+                }, new DmvPollSignal(TestServer.ConnectionString(), TimeSpan.FromMilliseconds(5)), new EventEncoder(new EncoderOptions { ServerName = "it" }), sink, store);
+                await engine.StartAsync(CancellationToken.None);
+                for (var i = 0; i < 400 && engine.Captures.Any(c => !c.Live || c.HoldingForBaseline); i++) await Task.Delay(20);
+                return (engine, sink);
+            }
+            async Task<List<int>> IdsAsync() => (await StoredAsync()).DistinctBy(m => m.Id).Select(m => System.Text.Json.JsonDocument.Parse(m.Data).RootElement.GetProperty("after").GetProperty("id").GetInt32()).ToList();
+            async Task InsertAsync(int id)
+            {
+                await TestServer.ExecAsync($"INSERT dbo.t VALUES ({id}, {id});", db);
+                for (var i = 0; i < 400 && !(await IdsAsync()).Contains(id); i++) await Task.Delay(20);
+            }
+            var (engine, sink) = await RunAsync();
+            for (var id = 1; id <= 3; id++) { await InsertAsync(id); await Task.Delay(2500); } // several looks: there is a safe position, and log was released behind it
+            var safe = (await store.LoadAsync(db, CancellationToken.None))!.Safe;
+            Assert.NotNull(safe);
+            Assert.True(engine.Captures.Single().ReleasedThrough < safe.CommitLsn && !engine.Captures.Single().ReleasedThrough.IsZero);
+            StopServer(); CopyDirectory(_dir, copy); await StartServerAsync(); // what NATS has on disk at its last sync
+            await InsertAsync(4);
+            await InsertAsync(5);
+            for (var i = 0; i < 200 && (await store.LoadAsync(db, CancellationToken.None))!.LastCommitLsn < engine.Captures.Single().AcknowledgedCommit; i++) await Task.Delay(20);
+            Assert.Equal([1, 2, 3, 4, 5], await IdsAsync());
+            var durable = (await store.LoadAsync(db, CancellationToken.None))!; // at this moment the power fails
+            await engine.DisposeAsync();
+            await sink.DisposeAsync();
+            store = new MemoryCheckpointStore();
+            await store.SaveAsync([durable], CancellationToken.None);
+            StopServer(); Directory.Delete(_dir, recursive: true); Directory.Move(copy, _dir); await StartServerAsync();
+            Assert.Equal([1, 2, 3], await IdsAsync());
+            (engine, sink) = await RunAsync();
+            await InsertAsync(6);
+            Assert.Equal([1, 2, 3, 4, 5, 6], await IdsAsync());
+            await Task.Delay(5000); // and the log behind it is released again
+            await InsertAsync(7);
+            Assert.Equal([1, 2, 3, 4, 5, 6, 7], await IdsAsync());
+            Assert.Null(engine.AuditProblem);
+            Assert.Empty(engine.ForeignReleases);
+            await engine.DisposeAsync();
+            await sink.DisposeAsync();
+        }
+        finally { await TestServer.DropDatabaseAsync(db); }
     }
 
     private static void CopyDirectory(string from, string to)

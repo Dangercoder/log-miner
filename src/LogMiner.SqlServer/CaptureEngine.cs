@@ -361,17 +361,14 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
                 try
                 {
                     // the point of no return: not on the strength of the acknowledgements alone
-                    var due = Captures.Where(c => c.Releasable is { } r && r.Commit > c.ReleasedThrough && DateTimeOffset.UtcNow - c.ReleasedAt >= options.ReleaseInterval).ToList();
+                    var due = CheckpointCoordinator.Due(Captures, options.ReleaseInterval, DateTimeOffset.UtcNow);
                     if (due.Count == 0) continue;
-                    if (await sink.AuditAsync(due.Select(c => c.Name).ToHashSet(StringComparer.Ordinal), ct) is { } problem)
-                    {
-                        AuditProblem = problem;
-                        _log.LogCritical("NO LOG IS RELEASED: {Problem}. SQL Server keeps everything since the last release; consumers may have lost events.", problem);
-                        await Task.Delay(TimeSpan.FromSeconds(5), ct);
-                        continue;
-                    }
-                    AuditProblem = null;
-                    await ReleaseAsync(ct);
+                    var problems = await sink.AuditAsync(due.Select(c => c.Name).ToHashSet(StringComparer.Ordinal), ct);
+                    AuditProblem = problems.Count == 0 ? null : $"{problems.Count} database(s), e.g. {problems.First().Key}: {problems.First().Value}";
+                    if (AuditProblem is not null)
+                        _log.LogCritical("THE LOG OF {Count} DATABASE(S) IS NOT RELEASED, e.g. {Database}: {Problem}. SQL Server keeps everything since the last release; consumers may have lost events.", problems.Count, problems.First().Key, problems.First().Value);
+                    await ReleaseAsync(due.Where(c => !problems.ContainsKey(c.Name)).ToList(), ct);
+                    if (problems.Count > 0) await Task.Delay(TimeSpan.FromSeconds(5), ct);
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested) { _log.LogError(ex, "releasing log failed; it is retained until it succeeds"); }
             }
@@ -379,7 +376,7 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
         catch (Exception) when (ct.IsCancellationRequested) { }
     }
 
-    private Task ReleaseAsync(CancellationToken ct) => CheckpointCoordinator.ReleaseAsync(Captures, _releaser, options.ReleaseInterval,
+    private Task ReleaseAsync(IReadOnlyCollection<DatabaseCapture> captures, CancellationToken ct) => CheckpointCoordinator.ReleaseAsync(captures, _releaser, options.ReleaseInterval,
         (c, ex) =>
         {
             if (ex is DatabaseChangedException) Superseded(c, ex);
@@ -388,8 +385,8 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
 
     public async Task FlushAsync(bool releaseLog, CancellationToken ct)
     {
-        await CheckpointCoordinator.SaveAsync(Captures, checkpoints, ct);
-        if (releaseLog) await ReleaseAsync(ct);
+        await CheckpointCoordinator.SaveAsync(Captures, checkpoints, ct, sink.ReceiptOf);
+        if (releaseLog) await ReleaseAsync(Captures, ct);
         foreach (var c in Captures) if (c.Dirty) MarkDirty(c); // e.g. a "Latest" start whose start point just became durable
     }
 
@@ -572,6 +569,44 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
         return (start == StartPosition.Auto ? StartPosition.Latest : start, end is null ? default : Lsn.Parse(end));
     }
 
+    /// <summary>
+    /// Before anything is sent: does the destination still have what these positions stand for? It may have acknowledged messages it had in memory
+    /// only and lost power (with or without this host). Then the stream goes back to its safe position, durably, and publishes from there again.
+    /// </summary>
+    private async Task CheckReceiptsAsync(Dictionary<string, Checkpoint> positions, IReadOnlyDictionary<string, string> incarnations, CancellationToken ct)
+    {
+        var receipts = positions.Values.Where(p => p.Receipt is not null && incarnations.GetValueOrDefault(p.Database) == p.Incarnation).ToDictionary(p => p.Database, p => p.Receipt!, StringComparer.Ordinal);
+        if (receipts.Count == 0) return;
+        var states = await sink.VerifyAsync(receipts, ct);
+        var back = new List<Checkpoint>();
+        foreach (var (name, state) in states.Where(s => s.Value is ReceiptState.Lost or ReceiptState.OtherDestination))
+        {
+            var cp = positions[name];
+            if (state == ReceiptState.OtherDestination)
+            {
+                var why = $"the destination ({sink.Name}) is not the one this database was published to: what was published before is not there";
+                _log.LogCritical("{Database}: {Why}", name, why);
+                if (options.Gaps is not null)
+                    await options.Gaps.RecordAsync(new CaptureGap(name, cp.Incarnation, cp.LastCommitLsn, cp.Safe?.CommitLsn ?? cp.LastCommitLsn, LogContinuity.Broken, why, DateTimeOffset.UtcNow), options.Settings.OnGap == GapPolicy.Resync, ct);
+            }
+            if (cp.Rewound() is { } earlier)
+            {
+                _log.LogCritical("{Database}: {Sink} does not have what it acknowledged; publishing again from {Safe} (the position was {Position})", name, sink.Name, earlier.LastCommitLsn, cp.LastCommitLsn);
+                positions[name] = earlier;
+                back.Add(earlier);
+            }
+            else
+            {
+                _log.LogCritical("{Database}: {Sink} does not have what it acknowledged, and there is no safe position yet; publishing everything again that SQL Server still holds", name, sink.Name);
+                positions[name] = cp with { RestartLsn = default, LastCommitLsn = default, LastBeginLsn = default, Held = false, Settled = false, Receipt = null };
+                back.Add(positions[name]);
+            }
+        }
+        if (back.Count > 0) await checkpoints.SaveAsync(back, ct);
+        if (options.SnapshotRequests is { } requests && states.Any(s => s.Value == ReceiptState.Lost))
+            await requests.RequestAgainAsync(states.Where(s => s.Value == ReceiptState.Lost).Select(s => s.Key).ToList(), options.ReleaseInterval * 2 + TimeSpan.FromMinutes(1), ct);
+    }
+
     /// <summary>Adds captures for new (e.g. newly created tenant) databases and drops captures of removed ones.
     /// A database whose incarnation changed (restored / re-created) gets a fresh capture. One that cannot be opened (single-user, being
     /// restored, an unreadable replica) is tried again later and does not keep the others waiting.</summary>
@@ -649,11 +684,15 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
             if (_notOpened.TryAdd(name, why)) _log.LogError("{Database}: cannot be opened ({Why}), so it is NOT captured yet; trying again (SQL Server keeps its log meanwhile)", name, why);
             _notOpened[name] = why;
         }
+        var positions = new Dictionary<string, Checkpoint>(StringComparer.Ordinal);
+        foreach (var (id, (name, incarnation, _)) in found)
+            if (!_captures.ContainsKey(id) && await checkpoints.LoadAsync(name, ct) is { } position) positions[name] = position;
+        await CheckReceiptsAsync(positions, found.Values.ToDictionary(f => f.Name, f => f.Incarnation, StringComparer.Ordinal), ct);
         foreach (var (id, (name, incarnation, published)) in found)
         {
             if (_captures.ContainsKey(id)) continue;
             var database = new DatabaseRef(id, name, incarnation);
-            var cp = await checkpoints.LoadAsync(name, ct);
+            var cp = positions.GetValueOrDefault(name);
             StartPosition start;
             Lsn holdFrom;
             if (cp is not null && cp.Incarnation == incarnation) (start, holdFrom) = (options.Settings.StartPosition, default);

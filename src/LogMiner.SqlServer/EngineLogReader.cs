@@ -26,13 +26,13 @@ namespace LogMiner.SqlServer;
 /// </summary>
 public sealed class EngineLogReader(SqlConnection connection)
 {
-    // Within the block of the oldest record the log only holds what is not needed any more (released, or not replicated): start there.
-    // (A caught-up reader's position is a block marker, the minimum is exact to the slot.)
+    // The minimum is exact to the slot, a caught-up reader's position is the last record it was given of its block: what else is in that block is not
+    // captured (@settled), so reading goes on at the minimum. Any other position is not behind everything in its block, and is refused there, too.
     private const string Prologue = """
         DECLARE @min nvarchar(46), @end nvarchar(46), @why nvarchar(200);
         SELECT @min = log_min_lsn, @end = log_end_lsn FROM sys.dm_db_log_stats(@dbid);
         IF @min IS NULL OR @end IS NULL THROW 50001, 'database is not readable (offline or no log stats)', 1;
-        IF LEFT(@start, 17) COLLATE Latin1_General_BIN2 < LEFT(@min, 17) COLLATE Latin1_General_BIN2 BEGIN SET @why = N'log starts at ' + @min; THROW 50002, @why, 1; END
+        IF (@settled = 1 AND LEFT(@start, 17) COLLATE Latin1_General_BIN2 < LEFT(@min, 17) COLLATE Latin1_General_BIN2) OR (@settled = 0 AND @start COLLATE Latin1_General_BIN2 < @min COLLATE Latin1_General_BIN2) BEGIN SET @why = N'log starts at ' + @min; THROW 50002, @why, 1; END
         IF @start COLLATE Latin1_General_BIN2 >= @end COLLATE Latin1_General_BIN2 BEGIN SET @why = N'the log ends at ' + @end + N', before ' + @start + N' which was read earlier: the database was put back to an earlier state'; THROW 50004, @why, 1; END
         IF @start IS NULL OR @start COLLATE Latin1_General_BIN2 < @min COLLATE Latin1_General_BIN2 SET @start = @min;
         SELECT @start, CURRENT_TIMEZONE_ID();
@@ -69,7 +69,7 @@ public sealed class EngineLogReader(SqlConnection connection)
         OPTION (MAXDOP 1) /*logminer-read*/;
         """;
 
-    private static readonly string Batch = DatabaseIdentity.HeldText(", @start nvarchar(46), @max int", ", @start, @max");
+    private static readonly string Batch = DatabaseIdentity.HeldText(", @start nvarchar(46), @max int, @settled bit", ", @start, @max, @settled");
 
     public SqlConnection Connection { get; } = connection;
 
@@ -82,12 +82,13 @@ public sealed class EngineLogReader(SqlConnection connection)
 
     /// <summary>Streams records from <paramref name="start"/> (inclusive; null = start of the active log).</summary>
     public async IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, CaptureScope scope,
-                                                       [EnumeratorCancellation] CancellationToken ct)
+                                                       [EnumeratorCancellation] CancellationToken ct, bool settled = false)
     {
         await using var cmd = DatabaseIdentity.Held(Connection, database, scope == CaptureScope.CdcTrackedTables ? ReplicatedQuery : AllRowsQuery, Batch);
         cmd.CommandTimeout = 120;
         cmd.Parameters.Add(new SqlParameter("@start", System.Data.SqlDbType.NVarChar, 46) { Value = start is { } s ? s.ToString() : DBNull.Value });
         cmd.Parameters.Add(new SqlParameter("@max", System.Data.SqlDbType.Int) { Value = maxRows });
+        cmd.Parameters.Add(new SqlParameter("@settled", System.Data.SqlDbType.Bit) { Value = settled });
         SqlDataReader reader;
         try { reader = await cmd.ExecuteReaderAsync(System.Data.CommandBehavior.SequentialAccess, ct); }
         catch (SqlException ex) when (DatabaseIdentity.IsChanged(ex)) { throw new DatabaseChangedException(database, ex); }

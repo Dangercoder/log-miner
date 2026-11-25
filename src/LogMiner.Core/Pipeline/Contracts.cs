@@ -20,22 +20,38 @@ namespace LogMiner.Pipeline;
 /// <para><see cref="ResumedAt"/>: where reading went on after the position had been truncated (zero: never). Transactions that began before it
 /// and commit after <see cref="LastCommitLsn"/> may lack their beginning and are never published; <see cref="ResumedInGap"/>: they are part of
 /// a recorded gap.</para>
+/// <para><see cref="Settled"/>: <see cref="RestartLsn"/> is the last record of a read that reached the end of the log on disk. What its log block holds
+/// besides is not captured, so it does not matter if that is truncated.</para>
+/// <para><see cref="Receipt"/>: the destination's receipt for the newest message it acknowledged (of this position or a later one). It is shown to the
+/// destination before anything is sent again; when it does not have that message any more (it acknowledged what it had not on disk, and lost power),
+/// the stream goes back to <see cref="Safe"/>.</para>
 /// </summary>
 public sealed record Checkpoint(string Database, string Incarnation, Lsn RestartLsn, Lsn LastCommitLsn, Lsn LastBeginLsn, DateTimeOffset UpdatedAt, bool Held = false,
-                                Lsn ResumedAt = default, bool ResumedInGap = false)
+                                Lsn ResumedAt = default, bool ResumedInGap = false, bool Settled = false, string? Receipt = null, SafePosition? Safe = null)
 {
+    /// <summary>The position to go on from when the destination has lost what it acknowledged since <see cref="Safe"/> (null: there is none).</summary>
+    public Checkpoint? Rewound() => Safe is not { } s ? null
+        : this with { RestartLsn = s.Held ? s.CommitLsn : s.RestartLsn, LastCommitLsn = s.CommitLsn, LastBeginLsn = s.BeginLsn, Held = s.Held, Settled = false, Receipt = null };
+
     public string Serialize() => string.Create(CultureInfo.InvariantCulture,
-        $"{RestartLsn}|{LastCommitLsn}|{LastBeginLsn}|{UpdatedAt.ToUnixTimeMilliseconds()}|{Incarnation}|{(Held ? 1 : 0)}|{ResumedAt}|{(ResumedInGap ? 1 : 0)}");
+        $"{RestartLsn}|{LastCommitLsn}|{LastBeginLsn}|{UpdatedAt.ToUnixTimeMilliseconds()}|{Incarnation}|{(Held ? 1 : 0)}|{ResumedAt}|{(ResumedInGap ? 1 : 0)}|{(Settled ? 1 : 0)}|{Uri.EscapeDataString(Receipt ?? "")}|{Safe?.RestartLsn}|{Safe?.CommitLsn}|{Safe?.BeginLsn}|{Safe?.Held}");
 
     public static Checkpoint Deserialize(string database, string value)
     {
         var p = value.Split('|');
-        if (p.Length is not (5 or 6 or 8)) throw new FormatException($"bad checkpoint for {database}: '{value}'"); // 5: before Held existed, 6: before ResumedAt
+        if (p.Length is not (5 or 6 or 8 or 14)) throw new FormatException($"bad checkpoint for {database}: '{value}'"); // 5: before Held existed, 6: before ResumedAt, 8: before Settled
         return new Checkpoint(database, p[4], Lsn.Parse(p[0]), Lsn.Parse(p[1]), Lsn.Parse(p[2]),
             DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(p[3], CultureInfo.InvariantCulture)), p.Length >= 6 && p[5] == "1",
-            p.Length == 8 ? Lsn.Parse(p[6]) : default, p.Length == 8 && p[7] == "1");
+            p.Length >= 8 ? Lsn.Parse(p[6]) : default, p.Length >= 8 && p[7] == "1", p.Length == 14 && p[8] == "1", p.Length == 14 && p[9].Length > 0 ? Uri.UnescapeDataString(p[9]) : null,
+            p.Length == 14 && p[10].Length > 0 ? new SafePosition(Lsn.Parse(p[10]), Lsn.Parse(p[11]), Lsn.Parse(p[12]), bool.Parse(p[13])) : null);
     }
 }
+
+/// <summary>
+/// An earlier durable position whose events the destination was seen to have, one release interval after they were acknowledged. Unless nothing is held
+/// back (<see cref="Held"/>), its transaction has not been released: SQL Server keeps it, and everything after it, in the log.
+/// </summary>
+public sealed record SafePosition(Lsn RestartLsn, Lsn CommitLsn, Lsn BeginLsn, bool Held);
 
 public interface ICheckpointStore
 {

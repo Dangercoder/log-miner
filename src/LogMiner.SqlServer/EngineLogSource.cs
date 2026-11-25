@@ -17,13 +17,13 @@ public sealed class EngineLogSource(SqlConnection readerConnection, string conne
 
     public bool Unhardened { get; private set; }
 
-    public async IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, [EnumeratorCancellation] CancellationToken ct)
+    public async IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, [EnumeratorCancellation] CancellationToken ct, bool settled = false)
     {
         var reader = new EngineLogReader(readerConnection);
         Unhardened = false;
         try
         {
-            await foreach (var r in reader.ReadAsync(database, start, maxRows, scope, ct))
+            await foreach (var r in reader.ReadAsync(database, start, maxRows, scope, ct, settled))
             {
                 _held = database;
                 yield return r;

@@ -47,7 +47,7 @@ public class CapturePipelineProperties
             "checkpoint-while-pumping", "latest-start", "snapshot-requested", "snapshot-finished", "chunk-read-fails",
             "ddl", "ddl-in-transaction", "ddl-rolled-back", "ddl-during-catalog-read", "crash-behind-ddl", "hidden-change",
             "foreign-release", "gap", "resumed-after-truncation", "engine-forgets",
-            "checkpoint-while-preparing", "fault-while-preparing", "crash-while-preparing", "nothing-left-of-it",
+            "checkpoint-while-preparing", "fault-while-preparing", "crash-while-preparing", "nothing-left-of-it", "power-failure-with-loss", "rewound-to-safe",
         ];
         var report = string.Join(" | ", Coverage.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}"));
         var missing = required.Where(r => !Coverage.ContainsKey(r)).ToList();
@@ -63,7 +63,7 @@ public class CapturePipelineProperties
         var finalFailures = preexisting > 0 ? tc.Draw(Generators.Integers().Min(0).Max(3), "failuresDuringFinalSnapshot") : 0;
         var maxRows = tc.Draw(Generators.Integers().Min(2).Max(40), "maxRowsPerRead");
         var maxBatch = tc.Draw(Generators.Integers().Min(1).Max(8), "maxBatchEvents");
-        using var m = new PipelineMachine(useSpool, preexisting, finalFailures, maxRows, maxBatch);
+        using var m = new PipelineMachine(useSpool, preexisting, finalFailures, maxRows, maxBatch, delayed: tc.Draw(Generators.Booleans(), "delayedRelease"));
         Stateful.Run(m, tc, new StatefulOptions { StepCount = 60 });
         m.Settle();
     }
@@ -175,6 +175,8 @@ public class CapturePipelineProperties
 
         /// <summary>First time a checkpoint was saved that claims less than the one before it.</summary>
         public string? Regression { get; private set; }
+        /// <summary>The destination lost what it had acknowledged: the position goes back on purpose.</summary>
+        public bool Rewinding { get; set; }
         /// <summary>The first checkpoint ever saved: where the stream's guaranteed range starts.</summary>
         public Checkpoint? First { get; private set; }
         public Checkpoint? Last { get; private set; }
@@ -185,7 +187,7 @@ public class CapturePipelineProperties
             _gate = null;
             if (gate is not null) { _entered.TrySetResult(); await gate.Task; }
             foreach (var c in checkpoints)
-                if (await _inner.LoadAsync(c.Database, ct) is { } before && c.LastCommitLsn < before.LastCommitLsn)
+                if (!Rewinding && await _inner.LoadAsync(c.Database, ct) is { } before && c.LastCommitLsn < before.LastCommitLsn)
                     Regression ??= $"the durable position went back from {before.LastCommitLsn} to {c.LastCommitLsn}";
             await _inner.SaveAsync(checkpoints, ct);
             First ??= checkpoints.FirstOrDefault();
@@ -528,11 +530,13 @@ public class CapturePipelineProperties
         private static bool PassesServerFilter(LogRecord r) =>
             (r.Flags & (LogRecordBits.Replicated | LogRecordBits.Compensation)) != 0 || r.Operation is LogOperation.CommitXact or LogOperation.AbortXact;
 
-        public async IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        public async IAsyncEnumerable<LogRecord> ReadAsync(DatabaseRef database, Lsn? start, int maxRows, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct, bool settled = false)
         {
             await Task.Yield();
             var snapshot = _log.ToList();
             if (snapshot.Count == 0) yield break;
+            // like the engine source: behind a settled position the beginning of its log block may be missing (here, up to seven records make a block)
+            if (settled && start is { } s && s < snapshot[0].Lsn && s.Vlf == snapshot[0].Lsn.Vlf && s.Block == snapshot[0].Lsn.Block && s.Slot / 7 == snapshot[0].Lsn.Slot / 7) { Cover("settled-in-block"); start = null; }
             if (start is { } wanted && wanted < snapshot[0].Lsn) { Cover("truncated-before-read"); throw new LogTruncatedException(wanted, snapshot[0].Lsn); }
             var from = start ?? snapshot[0].Lsn;
             if (!snapshot.Any(r => r.Lsn == from)) throw new InvalidOperationException($"error 9005: LSN {from} is not in the log");
@@ -676,8 +680,14 @@ public class CapturePipelineProperties
 
         private readonly int _finalFailures;
 
-        public PipelineMachine(bool useSpool, int preexistingRows, int finalFailures = 0, int maxRows = 7, int maxBatch = 3)
+        // With a release interval (the engine's way) the clock is the model's; without one everything that is behind a durable position is released at once.
+        private static readonly TimeSpan Interval = TimeSpan.FromSeconds(10);
+        private readonly bool _delayed;
+        private DateTimeOffset _now = DateTimeOffset.UnixEpoch + TimeSpan.FromDays(1);
+
+        public PipelineMachine(bool useSpool, int preexistingRows, int finalFailures = 0, int maxRows = 7, int maxBatch = 3, bool delayed = false)
         {
+            _delayed = delayed && !useSpool;
             _settings = new() { StartPosition = StartPosition.Earliest, MaxRowsPerRead = maxRows, MaxBatchEvents = maxBatch };
             _finalFailures = finalFailures;
             _useSpool = useSpool;
@@ -692,8 +702,42 @@ public class CapturePipelineProperties
 
         private ISink Sink => _useSpool ? _spool! : _remote;
 
-        private DatabaseCapture NewCapture() =>
-            new(5, "db", "inc1", Sync(() => _store.LoadAsync("db", CancellationToken.None)), _start, _start == StartPosition.Latest ? _db.LogEnd : default);
+        private DatabaseCapture NewCapture()
+        {
+            var position = Sync(() => _store.LoadAsync("db", CancellationToken.None));
+            // what the engine does before anything is sent
+            if (position?.Receipt is { } receipt && Sync(() => _remote.VerifyAsync(new Dictionary<string, string> { ["db"] = receipt }, CancellationToken.None).AsTask())["db"] == ReceiptState.Lost)
+            {
+                Cover(position.Safe is null ? "rewound-to-the-beginning" : "rewound-to-safe");
+                position = position.Rewound() ?? position with { RestartLsn = default, LastCommitLsn = default, LastBeginLsn = default, Held = false, Settled = false, Receipt = null };
+                // what it goes back to is still held by SQL Server, unless somebody else released it
+                Assert.True(!position.Held || _db.ForeignReleases > 0 || _db.ReleasedThrough < position.LastCommitLsn, $"going back to {position.LastCommitLsn}, but {_db.ReleasedThrough} is released");
+                _store.Rewinding = true;
+                Sync(() => _store.SaveAsync([position], CancellationToken.None));
+                _store.Rewinding = false;
+            }
+            return new(5, "db", "inc1", position, _start, _start == StartPosition.Latest ? _db.LogEnd : default);
+        }
+
+        /// <summary>Time passes: longer than the destination takes to have everything on disk.</summary>
+        [Rule(Weight = 2)]
+        public void TimePasses(TestCase tc)
+        {
+            _remote.Sync();
+            _now += Interval;
+        }
+
+        /// <summary>Power failure of the host everything runs on: the destination comes back without (some of) what it has not synced, the miner with its
+        /// durable position, which may be behind that.</summary>
+        [Rule]
+        public void PowerFailure(TestCase tc)
+        {
+            if (!_delayed) return;
+            var flush = tc.Draw(Generators.Booleans(), "a checkpoint just before");
+            if (flush) Flush();
+            if (_remote.LoseTail(tc.Draw(Generators.Integers().Min(0).Max(12), "lost")) > 0) Cover("power-failure-with-loss");
+            Crash(tc);
+        }
 
         private void OpenSpool()
         {
@@ -828,7 +872,7 @@ public class CapturePipelineProperties
             _db.CommitNewInsert();
             PumpOnce();                      // something acknowledged that is not checkpointed yet
             _store.Arm();
-            var flush = Task.Run(() => CheckpointCoordinator.FlushAsync([_capture], _store, _db, TimeSpan.Zero, null, CancellationToken.None));
+            var flush = Task.Run(FlushAsync);
             var entered = Sync(() => Task.WhenAny(_store.Entered, flush)) == _store.Entered;
             _db.CommitNewInsert();
             PumpOnce();                      // acknowledgements advance while the save is in flight
@@ -859,7 +903,8 @@ public class CapturePipelineProperties
         [Rule(Weight = 2)]
         public void Checkpoint(TestCase tc) => Flush();
 
-        private void Flush() => Sync(() => CheckpointCoordinator.FlushAsync([_capture], _store, _db, TimeSpan.Zero, null, CancellationToken.None));
+        private Task FlushAsync() => CheckpointCoordinator.FlushAsync([_capture], _store, _db, _delayed ? Interval : TimeSpan.Zero, null, CancellationToken.None, _remote.ReceiptOf, _now);
+        private void Flush() => Sync(FlushAsync);
 
         [Rule]
         public void LogBackup(TestCase tc) => _db.Truncate();
@@ -904,7 +949,7 @@ public class CapturePipelineProperties
             _db.CommitNewInsert();
             PumpOnce();                      // acknowledged, not checkpointed yet
             _store.Arm();
-            var flush = Task.Run(() => CheckpointCoordinator.FlushAsync([_capture], _store, _db, TimeSpan.Zero, null, CancellationToken.None));
+            var flush = Task.Run(FlushAsync);
             Sync(() => _store.Entered);
             _remote.Script([SinkOutcome.FailWithoutStore]);
             _db.CommitNewInsert();
@@ -948,9 +993,10 @@ public class CapturePipelineProperties
             }
             Assert.True(releases >= 3, $"{releases} releases"); // it does not wait for ever either, while changes keep coming
             var newest = _capture.Releasable!.Value.Commit;
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < 4; i++)
             {
                 Thread.Sleep(interval + TimeSpan.FromMilliseconds(20));
+                Sync(() => CheckpointCoordinator.SaveAsync([_capture], _store, CancellationToken.None));
                 Sync(() => CheckpointCoordinator.ReleaseAsync([_capture], _db, interval, null, CancellationToken.None));
             }
             Assert.Equal(newest, _db.ReleasedThrough); // nor when none come any more
@@ -1062,6 +1108,7 @@ public class CapturePipelineProperties
                 }
                 OpenSpool();
             }
+            _remote.NewProducer();
             _capture = NewCapture(); // everything in memory is gone; resume from the durable checkpoint
         }
 

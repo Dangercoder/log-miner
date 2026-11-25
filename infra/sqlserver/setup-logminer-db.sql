@@ -20,6 +20,9 @@ IF OBJECT_ID(N'dbo.checkpoints', N'U') IS NULL
         held          bit          NOT NULL CONSTRAINT df_checkpoints_held DEFAULT 0,
         resumed_at    binary(10)   NULL,
         resumed_in_gap bit         NOT NULL CONSTRAINT df_checkpoints_in_gap DEFAULT 0,
+        settled       bit          NOT NULL CONSTRAINT df_checkpoints_settled DEFAULT 0,
+        receipt       nvarchar(2000) NULL,                -- what the destination acknowledged last
+        safe_restart_lsn binary(10) NULL, safe_commit_lsn binary(10) NULL, safe_begin_lsn binary(10) NULL, safe_held bit NULL, -- where to go back to if it lost that
         CONSTRAINT pk_checkpoints PRIMARY KEY (server_name, database_name));
 GO
 SELECT server_name, database_name, incarnation, restart_lsn, commit_lsn, updated_at FROM dbo.checkpoints ORDER BY database_name;

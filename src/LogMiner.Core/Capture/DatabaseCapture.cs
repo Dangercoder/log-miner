@@ -93,6 +93,8 @@ public sealed class DatabaseCapture
     public long PumpStarted { get; set; }
     public void ClearQueued() => Volatile.Write(ref _queued, 0);
 
+    private bool _scanSettled; // _scanFrom ended a read that reached the end of the log on disk
+    private Lsn _settledAt;
     private Lsn _bell; // the newest log block known to have been written
     private bool _written; // something was written, which block is not known
     private bool _unhardened;
@@ -151,6 +153,7 @@ public sealed class DatabaseCapture
             checkpoint = null;
         }
         _durable = checkpoint;
+        _safe = checkpoint?.Safe;
         // Latest, and the end of the log is known: that is the start point, not wherever a catch-up happens to end
         if (checkpoint is null && start == StartPosition.Latest && !holdFrom.IsZero)
             _baseline = new Checkpoint(name, incarnation, default, new Lsn(holdFrom.Vlf, holdFrom.Block, (ushort)(holdFrom.Slot - 1)), default, DateTimeOffset.UtcNow);
@@ -191,8 +194,54 @@ public sealed class DatabaseCapture
     public bool HoldingForBaseline { get { lock (_gate) return _durable is null && _baseline is not null; } }
     public Lsn ReleasedThrough { get; internal set; }
     public DateTimeOffset ReleasedAt { get; internal set; }
-    /// <summary>What was releasable when it was last looked at: released at the next look.</summary>
-    internal (Lsn Begin, Lsn Commit)? ReleaseNext { get; set; }
+    /// <summary>After a release that failed.</summary>
+    internal DateTimeOffset ReleaseRetryAt { get; set; }
+
+    private SafePosition? _safe;
+    private (Checkpoint Durable, (Lsn Begin, Lsn Commit)? Release)? _look;
+    private (Lsn Begin, Lsn Commit)? _pendingRelease;
+
+    /// <summary>Whether there is anything to look at (see <see cref="Look"/>) that was not looked at twice already.</summary>
+    internal bool NeedsLook
+    {
+        get
+        {
+            lock (_gate)
+                return !Superseded && _durable is { } d && !d.LastCommitLsn.IsZero && (_look is not { } l || l.Durable.LastCommitLsn != d.LastCommitLsn || l.Durable.Held != d.Held || l.Release != _releasable
+                    || _safe is null || _safe.CommitLsn != d.LastCommitLsn || _safe.Held != d.Held);
+        }
+    }
+
+    /// <summary>
+    /// Called once per release interval, when the destination was seen to have what it acknowledged. The position that was durable at the last look is an
+    /// interval old now, longer than the destination may take to have what it acknowledges on disk: it becomes the safe position. What was
+    /// releasable then lies behind it, and is released as soon as that is durable itself - never before: until then the safe position that is
+    /// stored may be the very transaction.
+    /// </summary>
+    internal void Look(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            ReleasedAt = now;
+            if (_durable is not { } durable) return;
+            if (_look is { } last)
+            {
+                _safe = new SafePosition(last.Durable.RestartLsn, last.Durable.LastCommitLsn, last.Durable.LastBeginLsn, last.Durable.Held);
+                _pendingRelease = last.Release;
+            }
+            _look = (durable, _releasable);
+        }
+    }
+
+    /// <summary>What may be released now.</summary>
+    internal (Lsn Begin, Lsn Commit)? ReleaseDue
+    {
+        get
+        {
+            lock (_gate)
+                return !Superseded && _pendingRelease is { } r && r.Commit > ReleasedThrough && _durable?.Safe is { } s && (s.CommitLsn > r.Commit || (!s.Held && s.CommitLsn == r.Commit)) ? r : null;
+        }
+    }
     /// <summary>Transaction up to which the log may be released: acknowledged, behind a durable checkpoint, and (normally) not the newest.</summary>
     public (Lsn Begin, Lsn Commit)? Releasable { get { lock (_gate) return Superseded ? null : _releasable; } }
     /// <summary>Gaps detected since the capture started (each is recorded durably before the stream goes on).</summary>
@@ -225,6 +274,8 @@ public sealed class DatabaseCapture
             // Never behind the last acknowledged commit while the bookmark keeps it in the log: every later commit is then read again, and each
             // says by itself where it began and how many records it has. What may be lost no longer depends on the restart position.
             _scanFrom = cp.RestartLsn.IsZero ? null : cp.Held && cp.LastCommitLsn < cp.RestartLsn ? cp.LastCommitLsn : cp.RestartLsn;
+            _scanSettled = cp.Settled && _scanFrom == cp.RestartLsn;
+            _settledAt = _scanSettled ? cp.RestartLsn : default;
             _skipThrough = cp.LastCommitLsn;
             _ackedCommit = cp.LastCommitLsn;
             _ackedBegin = cp.LastBeginLsn;
@@ -235,6 +286,8 @@ public sealed class DatabaseCapture
         else
         {
             _scanFrom = null;
+            _scanSettled = false;
+            _settledAt = default;
             _skipThrough = default;
             _ackedCommit = _ackedBegin = default;
             _held = false;
@@ -252,7 +305,7 @@ public sealed class DatabaseCapture
             if (_durable is null && _baseline is { } live) return live; // the start point is saved before anything is published
             if (_ackedCommit.IsZero && _durable is null) return null;
             var cp = Position();
-            if (_durable is { } d && d.LastCommitLsn == cp.LastCommitLsn && d.RestartLsn == cp.RestartLsn && d.Held == cp.Held && d.ResumedAt == cp.ResumedAt && d.ResumedInGap == cp.ResumedInGap) return null;
+            if (_durable is { } d && d.LastCommitLsn == cp.LastCommitLsn && d.RestartLsn == cp.RestartLsn && d.Held == cp.Held && d.ResumedAt == cp.ResumedAt && d.ResumedInGap == cp.ResumedInGap && d.Settled == cp.Settled && d.Safe == cp.Safe) return null;
             return cp;
         }
     }
@@ -263,7 +316,8 @@ public sealed class DatabaseCapture
         var restart = _assembler.RestartLsn ?? (!_lastLsn.IsZero ? _lastLsn : _scanFrom ?? default);
         foreach (var t in _preparing) if (t.BeginLsn < restart) restart = t.BeginLsn;
         foreach (var r in _ready) if (!r.IsSnapshot && r.Begin < restart) restart = r.Begin; // built or in flight, not yet acknowledged
-        return new Checkpoint(Name, Incarnation, restart, _ackedCommit, _ackedBegin, DateTimeOffset.UtcNow, _held && _fullRelease != _ackedCommit, _resumedAt, _resumedInGap);
+        return new Checkpoint(Name, Incarnation, restart, _ackedCommit, _ackedBegin, DateTimeOffset.UtcNow, _held && _fullRelease != _ackedCommit, _resumedAt, _resumedInGap,
+            !restart.IsZero && restart == _settledAt, null, _safe);
     }
 
     /// <summary>The set of tables may have changed (CDC disabled on one, a new table): load the layouts again.</summary>
@@ -308,7 +362,11 @@ public sealed class DatabaseCapture
     {
         lock (_gate)
         {
-            if (_durable is null && _baseline is not null) _dirty = true; // publishing was held for this: pump again
+            if (_durable is null && _baseline is not null)
+            {
+                _dirty = true; // publishing was held for this: pump again
+                _safe ??= new SafePosition(cp.RestartLsn, cp.LastCommitLsn, cp.LastBeginLsn, cp.Held); // nothing was published before it
+            }
             // the previous position may be released now; the newest transaction stays, as the bookmark, unless a full release was asked for
             if (_durable is { } old && !old.LastCommitLsn.IsZero && old.LastCommitLsn < cp.LastCommitLsn) _releasable = (old.LastBeginLsn, old.LastCommitLsn);
             if (cp.LastCommitLsn > _ackedCommit)
@@ -381,7 +439,7 @@ public sealed class DatabaseCapture
             {
                 _rereadFor = ex.Transaction.CommitLsn;
                 ResetToCheckpoint();
-                if (_scanFrom is null || ex.Transaction.BeginLsn < _scanFrom) _scanFrom = ex.Transaction.BeginLsn;
+                if (_scanFrom is null || ex.Transaction.BeginLsn < _scanFrom) (_scanFrom, _scanSettled) = (ex.Transaction.BeginLsn, false);
                 _schemaStale = true; // the layouts must reach back as far
             }
             return true;
@@ -420,6 +478,7 @@ public sealed class DatabaseCapture
         lock (_gate)
         {
             _scanFrom = truncated.Oldest;
+            _scanSettled = false;
             _resumedAt = truncated.Oldest;
             _resumedInGap = continuity != LogContinuity.Intact;
             if (_resumedInGap) _held = false; // the bookmark is gone; the next captured change becomes the new one
@@ -443,7 +502,7 @@ public sealed class DatabaseCapture
         var committed = new List<CommittedTransaction>();
         var rows = 0;
         var readyEvents = 0;
-        await foreach (var r in source.ReadAsync(Database, _scanFrom, settings.MaxRowsPerRead, ct))
+        await foreach (var r in source.ReadAsync(Database, _scanFrom, settings.MaxRowsPerRead, ct, _scanSettled))
         {
             rows++;
             // Only the start point is durable, and the read began wherever the log begins now. The log has no holes, so it must reach back to that
@@ -498,8 +557,12 @@ public sealed class DatabaseCapture
         await SendReadyAsync(encoder, sink, settings, ct);
         LastPumpRows = rows;
         lock (_gate) _unhardened = source.Unhardened;
-        if (!_lastLsn.IsZero) _scanFrom = _lastLsn;
         var caughtUp = rows < settings.MaxRowsPerRead;
+        lock (_gate)
+        {
+            if (!_lastLsn.IsZero) (_scanFrom, _scanSettled) = (_lastLsn, caughtUp);
+            if (caughtUp) _settledAt = _lastLsn;
+        }
         if (caughtUp && _silent) await ReloadSchemaAsync(source, null, ct);
         bool snapshotWork;
         lock (_gate)
@@ -789,17 +852,21 @@ public sealed class DatabaseCapture
 public static class CheckpointCoordinator
 {
     public static async Task FlushAsync(IReadOnlyCollection<DatabaseCapture> captures, ICheckpointStore store, ILogReleaser? releaser,
-        TimeSpan releaseInterval, Action<DatabaseCapture, Exception>? onReleaseError, CancellationToken ct)
+        TimeSpan releaseInterval, Action<DatabaseCapture, Exception>? onReleaseError, CancellationToken ct, Func<string, string?>? receiptOf = null, DateTimeOffset? now = null)
     {
-        await SaveAsync(captures, store, ct);
-        if (releaser is not null) await ReleaseAsync(captures, releaser, releaseInterval, onReleaseError, ct);
+        await SaveAsync(captures, store, ct, receiptOf);
+        if (releaser is not null) await ReleaseAsync(captures, releaser, releaseInterval, onReleaseError, ct, now);
     }
 
-    public static async Task SaveAsync(IReadOnlyCollection<DatabaseCapture> captures, ICheckpointStore store, CancellationToken ct)
+    /// <param name="captures">Those whose positions are saved, if they changed.</param>
+    /// <param name="store">Where.</param>
+    /// <param name="ct">Cancels.</param>
+    /// <param name="receiptOf">The destination's receipt for the newest message of a database: asked after the position was taken, so never older.</param>
+    public static async Task SaveAsync(IReadOnlyCollection<DatabaseCapture> captures, ICheckpointStore store, CancellationToken ct, Func<string, string?>? receiptOf = null)
     {
         var batch = new List<(DatabaseCapture Capture, Checkpoint Cp)>();
         foreach (var c in captures)
-            if (c.PendingCheckpoint() is { } cp) batch.Add((c, cp));
+            if (c.PendingCheckpoint() is { } cp) batch.Add((c, cp with { Receipt = receiptOf?.Invoke(c.Name) ?? c.Durable?.Receipt })); // nothing acknowledged since the start: the old one still stands
         if (batch.Count > 0)
         {
             await store.SaveAsync(batch.Select(b => b.Cp).ToArray(), ct);
@@ -810,35 +877,42 @@ public static class CheckpointCoordinator
     /// <summary>
     /// Strictly behind what <see cref="SaveAsync"/> made durable, and not before it has been that for <paramref name="releaseInterval"/>: an
     /// acknowledgement may mean no more than that the destination has the event in memory (JetStream between two syncs). What it loses when its
-    /// host loses power is then still in SQL Server's log.
+    /// host loses power is then still in SQL Server's log, behind a stored position to go back to (<see cref="Checkpoint.Safe"/>).
     /// </summary>
     public static async Task ReleaseAsync(IReadOnlyCollection<DatabaseCapture> captures, ILogReleaser releaser, TimeSpan releaseInterval,
-        Action<DatabaseCapture, Exception>? onReleaseError, CancellationToken ct)
+        Action<DatabaseCapture, Exception>? onReleaseError, CancellationToken ct, DateTimeOffset? at = null)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = at ?? DateTimeOffset.UtcNow;
         foreach (var c in captures)
         {
-            if (c.ReleasedByOthers || c.Releasable is not { } target || target.Commit <= c.ReleasedThrough) continue;
-            if (now - c.ReleasedAt < releaseInterval) continue;
+            if (c.ReleasedByOthers || now < c.ReleaseRetryAt) continue;
+            (Lsn Begin, Lsn Commit) target;
             if (releaseInterval > TimeSpan.Zero)
             {
-                var aged = c.ReleaseNext;
-                c.ReleaseNext = target;
-                c.ReleasedAt = now;
-                if (aged is not { } due || due.Commit > target.Commit || due.Commit <= c.ReleasedThrough) continue;
+                if (now - c.ReleasedAt >= releaseInterval && c.NeedsLook) c.Look(now);
+                if (c.ReleaseDue is not { } due) continue;
                 target = due;
+            }
+            else
+            {
+                if (c.Releasable is not { } newest || newest.Commit <= c.ReleasedThrough) continue;
+                target = newest;
             }
             try
             {
                 await releaser.ReleaseAsync(c.Database, target.Begin, target.Commit, ct);
                 c.ReleasedThrough = target.Commit;
-                c.ReleasedAt = now;
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
-                c.ReleasedAt = now;
+                c.ReleaseRetryAt = now + releaseInterval;
                 onReleaseError?.Invoke(c, ex);
             }
         }
     }
+
+    /// <summary>Those <see cref="ReleaseAsync"/> would do something for (the destination is asked about them first).</summary>
+    public static IReadOnlyList<DatabaseCapture> Due(IReadOnlyCollection<DatabaseCapture> captures, TimeSpan releaseInterval, DateTimeOffset now) =>
+        captures.Where(c => !c.ReleasedByOthers && now >= c.ReleaseRetryAt && (releaseInterval > TimeSpan.Zero ? c.ReleaseDue is not null || (now - c.ReleasedAt >= releaseInterval && c.NeedsLook)
+            : c.Releasable is { } r && r.Commit > c.ReleasedThrough)).ToList();
 }

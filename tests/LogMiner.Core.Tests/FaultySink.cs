@@ -30,6 +30,8 @@ public sealed class FaultySink : ISink
         public readonly TaskCompletionSource Tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Done;
         public bool Failed;
+        public int Epoch;
+        public (int Seq, string Id) Newest;
     }
 
     private sealed record Item(SinkMessage Message, Batch Batch, int Index);
@@ -54,6 +56,40 @@ public sealed class FaultySink : ISink
     public IReadOnlyList<SinkMessage> Stored { get { lock (_gate) return [.. _stored]; } }
     public int Pending { get { lock (_gate) return _pending.Count; } }
 
+    // ---- receipts, and a destination that acknowledges what is in memory and syncs now and then
+    private int _epoch, _synced;
+    private (int Seq, string Id)? _receipt;
+
+    public string? ReceiptOf(string database) { lock (_gate) return _receipt is { } r ? $"{r.Seq}|{r.Id}" : null; }
+
+    public ValueTask<IReadOnlyDictionary<string, ReceiptState>> VerifyAsync(IReadOnlyDictionary<string, string> receipts, CancellationToken ct)
+    {
+        lock (_gate)
+            return ValueTask.FromResult<IReadOnlyDictionary<string, ReceiptState>>(receipts.ToDictionary(r => r.Key, r =>
+            {
+                var p = r.Value.Split('|', 2);
+                var seq = int.Parse(p[0], System.Globalization.CultureInfo.InvariantCulture);
+                return seq <= _stored.Count && _stored[seq - 1].MessageId == p[1] ? ReceiptState.Present : ReceiptState.Lost;
+            }));
+    }
+
+    /// <summary>What is stored now is on disk.</summary>
+    public void Sync() { lock (_gate) _synced = _stored.Count; }
+    /// <summary>The producer is another process: it has had no acknowledgement yet.</summary>
+    public void NewProducer() { lock (_gate) (_receipt, _epoch) = (null, _epoch + 1); }
+    /// <summary>The power fails: what was on its way is gone, and up to <paramref name="most"/> of what was stored since the last sync. Returns how many.</summary>
+    public int LoseTail(int most)
+    {
+        lock (_gate)
+        {
+            foreach (var p in _pending) p.Batch.Tcs.TrySetException(new IOException("the power failed"));
+            _pending.Clear();
+            var n = Math.Min(most, _stored.Count - _synced);
+            _stored.RemoveRange(_stored.Count - n, n);
+            return n;
+        }
+    }
+
     public void Script(IEnumerable<SinkOutcome> outcomes) { lock (_gate) foreach (var o in outcomes) _script.Enqueue(o); }
     public void Heal() { lock (_gate) _script.Clear(); }
 
@@ -66,7 +102,7 @@ public sealed class FaultySink : ISink
             Sends++;
             var outcome = _script.Count > 0 ? _script.Dequeue() : SinkOutcome.Ack;
             if (outcome == SinkOutcome.Throw) return ValueTask.FromException<Task>(new IOException("connection refused (scripted)"));
-            var batch = new Batch(outcome, messages.Count);
+            var batch = new Batch(outcome, messages.Count) { Epoch = _epoch };
             if (messages.Count == 0) batch.Tcs.SetResult();
             for (var i = 0; i < messages.Count; i++) _pending.AddLast(new Item(messages[i], batch, i));
             Monitor.PulseAll(_gate);
@@ -102,7 +138,11 @@ public sealed class FaultySink : ISink
                         SinkOutcome.FailHalfStored => index < b.Count / 2,
                         _ => false,
                     };
-                    if (stored) _stored.Add(m);
+                    if (stored)
+                    {
+                        _stored.Add(m);
+                        b.Newest = (_stored.Count, m.MessageId);
+                    }
                     if (!stored || b.Outcome == SinkOutcome.FailAfterStore) b.Failed = true;
                     Finish(b, completions);
                     if (!stored)
@@ -124,7 +164,11 @@ public sealed class FaultySink : ISink
             }
             foreach (var (b, failed) in deferred)
                 if (failed) b.Tcs.TrySetException(new IOException($"scripted {b.Outcome}"));
-                else b.Tcs.TrySetResult();
+                else
+                {
+                    lock (_gate) if (b.Epoch == _epoch && b.Newest.Seq > (_receipt?.Seq ?? 0)) _receipt = b.Newest;
+                    b.Tcs.TrySetResult();
+                }
             deferred = completions;
         }
     }

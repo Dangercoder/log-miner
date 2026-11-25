@@ -87,7 +87,25 @@ public interface ISink : IAsyncDisposable
 
     /// <summary>
     /// Does the destination hold what it acknowledged for these databases? Asked before SQL Server may discard the log behind it, which is the
-    /// point of no return. Null: yes (or it cannot tell); otherwise what is wrong.
+    /// point of no return. What is wrong, per database (empty: nothing, or it cannot tell).
     /// </summary>
-    ValueTask<string?> AuditAsync(IReadOnlyCollection<string> databases, CancellationToken ct) => ValueTask.FromResult<string?>(null);
+    ValueTask<IReadOnlyDictionary<string, string>> AuditAsync(IReadOnlyCollection<string> databases, CancellationToken ct) => ValueTask.FromResult<IReadOnlyDictionary<string, string>>(new Dictionary<string, string>());
+
+    /// <summary>A receipt for the newest message acknowledged of a database, to be kept with its position (null: the destination gives none).</summary>
+    string? ReceiptOf(string database) => null;
+
+    /// <summary>Asked before anything is sent: does the destination still have these messages? (Databases that are not in the answer: it cannot tell.)</summary>
+    ValueTask<IReadOnlyDictionary<string, ReceiptState>> VerifyAsync(IReadOnlyDictionary<string, string> receipts, CancellationToken ct) => ValueTask.FromResult<IReadOnlyDictionary<string, ReceiptState>>(new Dictionary<string, ReceiptState>());
+}
+
+public enum ReceiptState
+{
+    /// <summary>It has the message, and with it everything it acknowledged before.</summary>
+    Present,
+    /// <summary>It is not there any more for an ordinary reason (expired, purged, deleted), or it cannot be told.</summary>
+    Unknown,
+    /// <summary>The destination is the same and does not have what it acknowledged: it went back.</summary>
+    Lost,
+    /// <summary>It is another destination (created again, or configured differently): nothing that was published is there.</summary>
+    OtherDestination,
 }
