@@ -12,6 +12,7 @@ engine instead of running CDC capture jobs, built for instances with ~1,000+ dat
 | `src/LogMiner.SqlServer` | engine log reader (`fn_full_dblog`), schema loader, activity signals, `sp_repldone`, SQL Server state store + lease, gaps, self-test, capture engine |
 | `src/LogMiner.Nats` | NATS JetStream sink |
 | `src/LogMiner.Service` | Windows service / console host (`logminer.exe`) |
+| `src/LogMiner.Verify` | compares the stream with the tables (`logminer-verify`) |
 | `tests/` | Hegel property tests (unit, stateful models, real-engine integration) |
 | `tools/LogMiner.Lab` | experiments and benchmarks (`lab service`, `lab e2e`, `lab xe…`, `lab sql <file>`) |
 | `infra/` | SQL Server install/config scripts, tenant generator, NATS config |
@@ -54,7 +55,8 @@ Run two instances (two hosts) for HA, with the same `ServerName`: one holds the 
 Exit codes: 2 configuration, 4 the self-test failed, 5 a previous run did not come to an end.
 
 On the NATS server set `sync_interval` well below `ReleaseIntervalMs` (`1s`; the default of 2m is too long) or use R3: what was acknowledged
-since the last sync is lost when its host loses power, and SQL Server's log has it for `ReleaseIntervalMs` only.
+since the last sync is lost when its host loses power. The miner notices that and publishes it again from SQL Server's log, which has it for
+`ReleaseIntervalMs`.
 
 ## Verify a SQL Server build
 
@@ -78,13 +80,25 @@ SELECT * FROM logminer.dbo.gaps WHERE acknowledged = 0;
 
 Never free a full log with `sp_repldone` while the miner is down: start the miner instead.
 
-If the log says `NO LOG IS RELEASED`, the stream does not hold what it acknowledged (purged, recreated, or the NATS host lost power). SQL Server
-keeps everything since the last release. Load the affected databases again, then restart the service.
+If the log says `NO LOG IS RELEASED`, the stream does not hold what it acknowledged (purged, recreated, or the NATS host lost power). What the stream
+*lost* is published again by itself at the next start or reconnect. What was *purged or deleted* on purpose is not: SQL Server keeps everything
+since the last release; load the affected databases again, then restart the service.
+
+## Does the stream match the tables?
+
+```powershell
+# request a historical load (next section), and when it is done:
+dotnet run --project src/LogMiner.Verify -c Release -- --stream LOGMINER --url nats://127.0.0.1:4222   # exit code 0 = nothing differs, 1 = differences
+```
+
+It reads the stream only (no SQL Server, no acknowledgements) and checks every change against the row before it, and every load against what the
+stream has built. `--follow` keeps watching, `--strict` also fails for tables that no load was compared with yet.
 
 ## Historical loads
 
 Request one with a row in the state database. It runs inside the database's live stream: no table lock, no long
-transaction, resumable. Rows arrive as `op: "r"` events, in order with the changes:
+transaction, resumable. Rows arrive as `op: "r"` events, in order with the changes, between two `op: "l"` markers (a consumer that does not need them passes over
+them; what it holds and a whole load did not mention is gone from the table):
 
 ```sql
 INSERT logminer.dbo.snapshot_requests (server_name, database_name, table_name) VALUES ('sql01', 'tenant_0042', 'dbo.orders');

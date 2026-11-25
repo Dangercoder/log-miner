@@ -17,6 +17,7 @@
     <ProjectReference Include="..\..\src\LogMiner.SqlServer\LogMiner.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\LogMiner.Nats\LogMiner.Nats.csproj" />
     <ProjectReference Include="..\..\src\LogMiner.Service\LogMiner.Service.csproj" />
+    <ProjectReference Include="..\..\src\LogMiner.Verify\LogMiner.Verify.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Shared\*.cs" LinkBase="Shared" />

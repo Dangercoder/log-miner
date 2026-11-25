@@ -69,6 +69,38 @@ public class CapturePipelineProperties
         m.Settle();
     }
 
+    [Fact]
+    public void What_is_gone_from_the_block_of_the_position_is_reported()
+    {
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0, maxRows: 2);
+        m.GoneFromTheBlockOfThePosition();
+        m.Settle();
+        Assert.Equal(1, m.Gaps);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void What_is_released_is_behind_the_safe_position_that_is_stored(int looksBefore)
+    {
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0, maxRows: 40, delayed: true);
+        m.PowerFailsRightAfterALook(looksBefore);
+        m.Settle();
+        Assert.Equal(0, m.Gaps);
+    }
+
+    [Fact]
+    public void What_is_lost_after_an_upgrade_is_published_again()
+    {
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0, maxRows: 40, delayed: true);
+        m.LostAfterAnUpgrade();
+        m.Settle();
+        Assert.Equal(0, m.Gaps);
+    }
+
     /// <summary>A delete that is gone was never published, and no row of a load says so. Its markers do: what a whole load does not mention is not there.</summary>
     [Fact]
     public void Deletes_that_are_gone_are_found_by_the_next_load()
@@ -1018,6 +1050,63 @@ public class CapturePipelineProperties
         }
 
         public int PhantomsFound { get; private set; }
+
+        /// <summary>Two transactions and the beginning of a third in one block: the first is read, the second is not, and the third is what the log begins
+        /// with from then on.</summary>
+        public void GoneFromTheBlockOfThePosition()
+        {
+            _db.CommitNewInsert();
+            var first = _db.LastReplicatedCommit;
+            _db.CommitNewInsert();
+            _db.Begin();
+            PumpOnce();
+            Flush();
+            Assert.Equal(first, _capture.Durable!.RestartLsn); // the premise
+            Assert.False(_capture.Durable.Settled);
+            _db.ForeignRelease();
+            _db.Truncate();
+            _capture = NewCapture();
+        }
+
+        /// <summary>The power fails right after a look: what was looked at then is not stored yet.</summary>
+        public void PowerFailsRightAfterALook(int looksBefore)
+        {
+            for (var i = 0; i < looksBefore; i++)
+            {
+                _db.CommitNewInsert();
+                PumpOnce();
+                _remote.Sync();
+                _now += Interval;
+                Flush();
+            }
+            _db.CommitNewInsert();
+            PumpOnce();
+            _now += Interval;
+            Flush(); // saved, then looked at
+            Assert.Equal(1, _remote.LoseTail(1));
+            _powerFailures++;
+            _capture = NewCapture();
+        }
+
+        /// <summary>The stored position is one of the version before receipts; then the destination loses what it got after the upgrade.</summary>
+        public void LostAfterAnUpgrade()
+        {
+            for (var i = 0; i < 3; i++) _db.CommitNewInsert();
+            PumpOnce();
+            Flush();
+            _remote.Sync();
+            var old = Sync(() => _store.LoadAsync("db", CancellationToken.None))! with { Receipt = null, Safe = null, Settled = false };
+            Sync(() => _store.SaveAsync([old], CancellationToken.None));
+            _capture = NewCapture();
+            for (var i = 0; i < 3; i++) _db.CommitNewInsert();
+            PumpOnce();
+            Flush();
+            Assert.True(_capture.Durable!.LastCommitLsn > old.LastCommitLsn);
+            Assert.Equal(old.LastCommitLsn, _capture.Durable.Safe!.CommitLsn);
+            Assert.Equal(3, _remote.LoseTail(3));
+            _powerFailures++;
+            _capture = NewCapture();
+        }
 
         /// <summary>Rows are deleted while the miner is down, and that part of the log is released and truncated by somebody else.</summary>
         public void DeletesGoneInAGap(int rows, int deleted)

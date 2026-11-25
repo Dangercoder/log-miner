@@ -4,10 +4,12 @@
     <Project Path="src/LogMiner.Nats/LogMiner.Nats.csproj" />
     <Project Path="src/LogMiner.Service/LogMiner.Service.csproj" />
     <Project Path="src/LogMiner.SqlServer/LogMiner.SqlServer.csproj" />
+    <Project Path="src/LogMiner.Verify/LogMiner.Verify.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LogMiner.Core.Tests/LogMiner.Core.Tests.csproj" />
     <Project Path="tests/LogMiner.IntegrationTests/LogMiner.IntegrationTests.csproj" />
+    <Project Path="tests/LogMiner.Verify.Tests/LogMiner.Verify.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/LogMiner.Lab/LogMiner.Lab.csproj" />

@@ -55,7 +55,11 @@ reported loudly** (schema load lists them; engine warns; health counts them) —
   |---|---|---|---|---|
   | read from master (before) | bare call: yes | 30 of 90 | 1.4 MB | 1.86 ms (the same small log, container) |
   | read inside the database | no | 2 of 80 | **1.65 GB** (a plan of 1.4 MB each) | - |
-  | **held: entered, read in master** | **no: 548 restores, 297 offline cycles, 319 detach/attach** | **0 of 164** | ~20 MB | 1.84 ms + 0.08 ms for the guard |
+  | **held: entered, read in master** | **no: 548 restores, 297 offline cycles, 319 detach/attach** | **0 of 164** | one plan | 1.84 ms + 0.08 ms for the guard |
+
+  What has to run in the database's own context (layouts, `sp_repldone`) has a plan per database. Those plans are small (the identity is checked by
+  one statement in master), large statements that are needed once are compiled for that use (`RECOMPILE`), and `DBCC OPENTRAN` runs from master: with
+  1,200 databases the service leaves 54 MB of plans 20 s after a start (306 MB before) and ~5 MB once it runs (*measured*, `experiments/39`).
 
   Three details carry it (*measured*, `experiments/36`): the procedure's name is in a *variable*, because a name in the text opens the database
   when the batch is compiled, before any guard in it runs; a database in `SINGLE_USER` is left alone (`DATABASEPROPERTYEX` takes no lock), its one
@@ -77,6 +81,9 @@ reported loudly** (schema load lists them; engine warns; health counts them) —
   matches nothing cannot advance and every later read re-scans the same log — *measured*: 80–130 ms pumps that saturated the
   workers. Markers reach the assembler as no-op records.
 * Incremental read cost: **0.09 ms** (*measured*); a full scan of an 8 MB active log: 34 ms.
+* **Changes of the set of tables come from the log, too.** `sys.sysschobjs` is allocation unit 281474978938880 in every database (`experiments/37`): a
+  committed change of it (table created, renamed, dropped, CDC switched on or off) makes the layouts and the hold be looked at again. Asking the
+  catalog instead cost 10-12 ms per database and minute, a fifth of a core with 1,200 databases.
 * Current layouts come from `sys.system_internals_partition_columns` (dropped columns, uniqueifier, metadata-only added columns
   with defaults), loaded on a separate pooled connection (a reload can be needed mid-read). Each load records a log position read
   *before* the catalog; **DDL older than that causes no reload** — *measured*: replaying CDC-enable DDL otherwise
@@ -114,7 +121,9 @@ before a rebuild and published NULLs for altered columns — nightly index maint
 * **Nothing is skipped.** A committed change that still cannot be attributed to a layout stops its database's stream
   (`UndecodableChangeException`), log retained. The only records ignored are those of tables published by transactional replication.
 * During an ONLINE rebuild only the source rowset's records are replicated records (*measured*), so nothing is published twice.
-* A renamed table's earlier changes are published under the name it has when they are read (renames carry no marker).
+* **Every change comes under the name its table had when it was made**, whether the miner was there or not: renames and schema transfers are changes in
+  place of the table's row in `sysschobjs` (`experiments/38`) and are undone like the rest. A renamed table is a recorded gap (`Renamed`, with a load
+  by default): its rows were published under the old name.
 
 ## 2. Which of 1,200 databases changed? (the "doorbell")
 
@@ -135,8 +144,10 @@ therefore lets SQL Server report the flushes itself, and polls only to check it:
   once**, so that is done every `Signal.DispatchIntervalMs` (4 ms): 55 µs of CPU when filtered to the session's address, 28 ms when not,
   because that renders `system_health`'s ring buffer (`experiments/21`, `22`). This is a push in two steps, not an interrupt: on average half
   a dispatch interval is added.
-* **Visible when pushed.** None of 6,000 pushed blocks was missing from a `fn_full_dblog` read started at once, under concurrent commits
-  (`lab xerace`). The engine still checks: a read that does not reach the pushed block is repeated (`BellRetries`).
+* **Visible when pushed.** On Windows none of 6,000 pushed blocks was missing from a `fn_full_dblog` read started at once, under concurrent commits
+  (`lab xerace`). SQL Server on *Linux* announces a block before it is on disk: 8 % were not readable yet, for as long as the disk takes (over 63 ms,
+  seconds under load). A read that does not reach the pushed block is repeated (up to 40 times, 8 s); giving up after 60 ms, as before, left such
+  events to the next sweep: **1-10 s late**. The health line counts both (`early reads repeated`, `given up`).
 * **Audit (`LogWriteAudit`).** Once a second all log files' `num_of_bytes_written` are polled and compared with the sum of the pushed
   `write_size`. They agree to the byte, except for the log file's own headers (12 or 24 KB at a VLF change, *measured*). A database whose
   unexplained bytes grew is read; a push that fell silent while log is written is restarted after three polls.
@@ -181,6 +192,13 @@ SQL Server log ──read──> DatabaseCapture ──SendAsync──> [SpoolSi
    and only after the destination was **audited**: the stream is still the one that was published to, and holds the newest acknowledged message
    of every database that is about to be released, under its id. Releasing is the point of no return; until then everything can be
    published again. In a database that is published for replication the miner does not release at all.
+   **An acknowledgement is not yet a disk.** Once per `ReleaseIntervalMs` the miner looks: the position that was durable at the last look is an
+   interval old and audited now; it becomes the **safe position**, and what was releasable then is released once that safe position is itself in
+   the checkpoint. With every checkpoint goes the destination's **receipt** for the newest message (stream, its creation, sequence, id). Before
+   anything is sent again - at the start, and when a connection comes back - the destination is shown its receipts. One that does not have that
+   message any more lost what it had acknowledged (a NATS host without power, between two syncs): the stream goes back to the safe position, whose
+   log SQL Server still has, and **publishes it again by itself**; loads that had ended meanwhile are requested again. Another stream than the
+   one the receipt is of is a recorded gap and goes back, too. A stream that has no safe position yet goes back to where it began.
 5. Any failure rewinds that database to its durable checkpoint (never forward); the log is retained meanwhile. What committed before a
    transaction that cannot be decoded goes out first; it and everything behind it waits, however often it is tried.
 6. **The durable position never moves back** (a model invariant): not while the log is re-read after a restart, and not when the sink fails
@@ -196,7 +214,7 @@ silently at the oldest record.
 * **Detected when it matters.** A position that is no longer in the log is refused by the reader. If the bookmark is intact, nothing is
   missing and reading goes on; if it is gone (`Broken`) or there was none (`Unknown`), the gap is written to `logminer.dbo.gaps` *before* the
   stream moves on. `OnGap`: `Resync` (default: a historical load of the database is requested in the same transaction; deletes inside the gap
-  are not conveyed) or `Continue`. A transaction that began before the point where reading went on is never published in part, also after a
+  are found by its markers, section 4) or `Continue`. A transaction that began before the point where reading went on is never published in part, also after a
   restart (the point is part of the checkpoint: `resumed_at`); if the truncation looked harmless, that contradiction is itself recorded as a
   gap.
 * **Reported while there is still time.** Every minute the bookmarks are checked (*measured*: ~0.1 % of one core for 1,200 databases); a
@@ -210,8 +228,10 @@ silently at the oldest record.
   way (`NewTable`), and with `Resync` the rows it already had are loaded.
 * A restored or re-created database (new incarnation) is recorded as a gap as well: its contents no longer follow from the published events.
 * CDC refuses databases with delayed durability (error 22891).
-* A truncated position within the block of the oldest record is not a gap: a caught-up reader's position is a block marker, the minimum is exact
-  to the slot.
+* **Positions inside a block.** The oldest record is exact to the slot, a position is the last record that was read. If the log begins inside the block of
+  a position, nothing is missing as long as that block had been read to its end: no block is ever added to once a read up to `log_end_lsn` has
+  returned it (*measured*, `experiments/40`). The checkpoint says whether that is so (`settled`); any other position in such a block is refused like
+  one that is gone altogether. (Before, transactions behind such a position were skipped without a word; found by a review.)
 
 ### Where the position lives (default: SQL Server)
 `SqlStateStore` keeps checkpoints in a small `logminer` database on the instance: the service is stateless (reinstall or
@@ -231,7 +251,7 @@ move it freely), and the data sits on storage that is already backed up and moni
   `ICheckpointStore` (an object store with ETag CAS fits).
 
 ### Starting without a checkpoint
-A `Latest` start whose log was released by someone else and truncated before its first read is a recorded gap: the log has no holes, so the first
+A `Latest` start whose log was truncated before its first read (released by someone else, or ordinarily: nothing holds it yet) is a recorded gap: the log has no holes, so the first
 record that is read must reach back to the durable start point (found by the pipeline model; before, those changes were lost without a word).
 `Earliest` replays the retained log. `Latest` silently skips the existing log, then goes live, but it **publishes nothing until
 that start point is a durable checkpoint**. A `Latest` start point depends on *when* the catch-up ended. If the process crashed
@@ -247,18 +267,26 @@ harmless — `experiments/08`.)
   (`server:db:incarnation:commitLsn:seq`, names escaped, ASCII) for destination de-duplication. **Consumers should keep a high-water mark per
   `(source.db, source.incarnation)` of `(commit_lsn, seq)`** and pass over anything at or below it: a replay that is partly older than the
   destination's duplicate window is stored again in part, behind newer events. `seq` ascends within a transaction (not contiguous when it also
-  changed replicated rows that are not captured). Rows of a historical load have an id of their own for every reading of a chunk.
+  changed replicated rows that are not captured). Rows of a historical load have an id of their own for every reading of a chunk, and no
+  `commit_lsn` and `seq`: they have no place in the commit order and neither move that mark nor are compared with it (with them, a consumer dropped a
+  change that came right behind a load; found by a review). The mark is one per database only with the default key: with `PartitionKey` `Table` or
+  `RowKey` the messages of one transaction may be stored in another order, so it has to be kept per key (the service warns).
 * **No overtaking per key** (key = database by default). A failure inside a sink cannot stop a later call the caller already
   made, so **callers keep one unacknowledged call per key** (Kafka needs broker sequence numbers for the same reason); within
   a call the sink stores a key's messages in order and stores nothing after a failed one. The JetStream sink sends one
   message per key at a time (lanes), pipelined across keys. **Nothing is sent late:** a connection on which anything went unanswered is given
   up with all that is in it and a new one is opened (the client would send it when it is connected again, behind newer messages). Only a
   PubAck of the configured stream counts. An existing stream is never changed. Key `RowKey` orders by row only; a changed key is two rows.
+* **Throughput of one database** is one round trip per message (one unacknowledged message per lane): a transaction of 4,096 rows takes ~0.25 s on the lab
+  host. Databases do not slow each other down.
+* **A transaction is buffered until it commits.** One whose rows exceed `MaxBufferedMb` (1,024) stops its database, log retained. Nothing is spilled to
+  disk: raise the limit and restart, or give that part up (section 8).
 * **An event that is too large** for the destination comes with its largest values marked as unavailable (never the key) instead of stopping
   its database.
 * **SpoolSink** (optional): CRC-32C-framed segments, group-commit fsync, forwarding from memory right after the write,
   go-back on failure, one batch in flight, deletion only behind a persisted cursor, torn-tail truncation and fail-closed
-  recovery (a damaged record that had been on disk, a missing segment: it refuses to start), **exact message-id de-duplication** (a position-based high-water mark was replaced: the model test showed it could
+  recovery (a damaged record that had been on disk, a missing segment: it refuses to start); it forwards strictly in order, so a message the destination
+  refuses for good holds up every database behind a spool (without one, only its own), **exact message-id de-duplication** (a position-based high-water mark was replaced: the model test showed it could
   drop a message that was never durably spooled). Ack modes: `Delivered` (default; required when the checkpoint is in SQL
   Server; what an earlier run left in the spool is dropped, the source sends it again) or `Spooled` (only with `State: File`, on the same
   durable volume; disabling a spool that holds undelivered records is refused).
@@ -274,6 +302,12 @@ second pipeline:
    carries a newer image of those rows.
 3. When the stream reaches H (the first transaction committed at or after H, or the end of the log), the remaining rows are
    emitted as `op: "r"` events in stream order.
+
+A load is announced and concluded in the stream, on the table's subject, by events `op: "l"` with no key and no images:
+`"load": {"id", "phase": "begin" | "end", "rows"}`. The begin comes before the first chunk is read, so **every row the table has at the end was
+loaded or changed between the markers**: what a consumer holds besides does not exist any more (deletes that were lost in a gap). `rows` counts the
+loaded rows; when fewer different keys arrived, the load is not whole and says nothing. A chunk whose acknowledgement was lost is read again, also
+behind the end. A load that starts over (restart, fault) begins again with the same id. Consumers ignore operations they do not know.
 
 **Why it is exact:** a row read at time *t* reflects every commit completed before *t*. A key with no commit in [L, H) has the
 same value at H. A key with a commit in [L, H) is superseded by that commit's event. Locking read committed is forced because
@@ -293,10 +327,24 @@ an RCSI version can lag a commit whose log record is already written. Fully dura
   both paths, and text is read as bytes and decoded like the log's. A real-engine test asserts that every snapshot row is byte-identical, as
   JSON, to the row's stream image. Off-row LOBs, `xml` and legacy LOBs are values in a load and unavailable in the stream.
 
+### Comparing tables with the stream
+`logminer-verify` (`src/LogMiner.Verify`) reads the stream as a consumer would, and nothing else: no SQL Server, nothing written, no acknowledgements.
+* **Chain:** the before image of every update and delete must be the row as the stream left it; an inserted key must not be there.
+* **Load:** every row of a historical load must be the row the stream has built, what the load does not mention must not be there, and its count must
+  arrive. So requesting a load compares the whole table with the stream, at its place in the stream, without stopping the writers.
+* Rows are kept as hashes (100-260 bytes each in that test), exit code 1 for any difference.
+* *Measured* end to end (`StreamVerificationTests`: SQL Server, engine, NATS; writers, key changes, rollbacks, a column added, a restart, three loads):
+  5,507 messages, all three tables verified; **600 of 600** events taken away one at a time are noticed.
+* About 120,000 messages/s from a local NATS server and 82 bytes per row of five columns (*measured*, a million rows).
+* It cannot tell: what happened before a table's first whole load, tables without a key, a lost update that a later one hides in columns that are
+  unavailable or were retyped in between, a delete that is missing at the very end of the stream (reported as undecided until the next message). It may
+  report too much: when the first message the stream still holds is in the middle of a replay, for DDL that changes a value's text but not its JSON
+  kind, for a column dropped and added again. A renamed table is another table.
+
 ## 5. Self-test: is this SQL Server build understood?
 The log's format is not a documented interface. Before capturing, the service proves once per (SQL Server version, miner build) that it
 still works here: in a scratch database it checks every type, rollbacks and savepoints, heaps with forwarded rows, DDL while the capture is
-down, the release bookmark, and that historical loads encode rows exactly like the stream (1.4 s). The result is kept in
+down, the release bookmark, and that historical loads encode rows exactly like the stream, between their markers (2 s). The result is kept in
 `logminer.dbo.self_tests`. A failure stops the service before it captures anything (`SelfTest`: `Require` | `Warn` | `Off`); the log is
 retained meanwhile. Before patching: `logminer.exe --self-test "<connection string of a test server with the CU>"` (exit code 0 or 4).
 
@@ -321,16 +369,18 @@ only; `tests/Shared/Blocking.cs` is the one place that blocks on asynchronous co
 | `LogFlushDecoderProperties` | generated packets decode in order; damaged or arbitrary ones are refused as a whole; fields are found by the column list; recorded packets of the real engine account for every byte written |
 | `LogWriteAuditProperties` | writes, late, early and lost events in any order: a lost one is found by the next poll, a pushed one is not read again; outages; stalls |
 | `DoorbellTests` (integration) | commits pushed within milliseconds with their log block; session dropped, stopped, robbed of its event, stream or dispatcher killed → still noticed, and the push comes back; missing permission; stuck reader; prompt stop; **stateful: with the sweep off the doorbell alone must wake the capture while all of that happens** |
-| `CapturePipelineProperties` (more) | a checkpoint taken while a transaction is being prepared, then a fault or a crash; a transaction that cannot be decoded holds back what follows and nothing else; a restart position moved anywhere later loses nothing; read and batch sizes are drawn |
+| `CapturePipelineProperties` (more) | a checkpoint taken while a transaction is being prepared, then a fault or a crash; a transaction that cannot be decoded holds back what follows and nothing else; a restart position moved anywhere later loses nothing; read and batch sizes are drawn; **power failures of the destination (what it had acknowledged and not synced is gone), with the release interval; log blocks, and the log beginning inside the block of the position; a consumer that uses load markers: behind gaps, too, its replica equals the table** |
 | `EventProperties` | message ids are equal for the same change only (any names, servers, incarnations, readings); any nvarchar value as JSON, any varchar bytes in 17 code pages, numbers bit by bit; headers, destinations, oversized events; keys equal exactly when their values are |
 | `DurabilityProperties` | spool records and their damage; spool directories with files flipped, cut, zeroed, deleted, renamed: everything acknowledged is delivered or it refuses to start; checkpoint files; event files |
 | `StreamIntegrityTests` (integration) | a commit that is not on disk is not published; a start that is not in the log is refused; every kind of partial rollback under RCSI and ADR, with SQL Server's own record counts; undone transactions are released; ordinary truncation is not a gap |
 | `DatabaseIdentityTests` (integration) | names swapped, ids reused, restored over itself, not openable; **stateful: random renames, restores, drops, detach/attach, offline while rows are written → a row is only published under a name its database had, and none is missing** |
 | `HistoricalLoadKeyTests` (integration) | 16 kinds of key (fractions of a second, NULLs, Cyrillic, UTF-8, Japanese, Turkish, half surrogate pairs, 38 digits, CLR …): every row once for every chunk size, the stream's JSON, no row dropped because of another |
 | `UnloggedChangeTests` (integration) | SWITCH in and out, live and while down, is a gap once; rebuild, split, merge are not; converting DDL is reported; large rebuilds and drops; a DDL transaction whose beginning is truncated |
-| `JetStreamSinkTests` (integration) | a real server stopped, restarted, purged, put back, its stream deleted, others answering: stored in order, nothing late, only its acknowledgement counts, the audit notices |
+| `JetStreamSinkTests` (integration) | a real server stopped, restarted, purged, put back, its stream deleted, others answering: stored in order, nothing late, only its acknowledgement counts, the audit notices; **a power failure that takes acknowledged messages: published again by itself** |
 | `ServiceTests` (integration) | the real `logminer.exe`: no NATS at boot, lease killed, NATS stopped, state database offline, a captured database offline, every session killed → the same process delivers everything; killed and started again; a standby takes over |
 | `SelfTestTests` (integration) | passes here, leaves nothing behind, never drops a database it did not create |
+| `StreamVerificationTests` (integration) | tables against the stream, end to end, with `logminer-verify`: nothing differs, and every event that is taken away is noticed |
+| `StreamVerifierProperties` | the verifier against simulated tables, streams and losses |
 | `SqlStateStoreTests` (integration) | checkpoints round trip; standby takes over when the active instance dies; a fenced instance cannot overwrite |
 
 **Mutation-tested**: planted bugs that the tests must catch.
@@ -412,5 +462,5 @@ issuing the insert to the consumer receiving the event from JetStream.
 * JetStream: R1 loses on a NATS host power loss what was acknowledged since the last sync. `sync_interval: always` is not the answer: *measured*
   p50 6.5 s at 200 events/s (every message is synced on its own), `100ms` +0.8 ms, `1s` nothing measurable. Instead a change stays in SQL
   Server's log for `ReleaseIntervalMs` (10 s) after its checkpoint, however many follow, so with a shorter `sync_interval` what NATS lost is
-  still there. **Publishing it again is not automatic**: the audit before every release notices that the stream lost messages, stops releasing
-  and says so; the position then has to be set back by hand. R3 (three hosts) has no such window.
+  still there, and is published again by itself (section 3). Consumers see it as a repetition. R3 (three hosts) has no such window.
+* Check the stream against the tables: request a load (README) and run `logminer-verify`.
