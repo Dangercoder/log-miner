@@ -27,12 +27,14 @@ public sealed class DatabaseIdentityTests : IAsyncLifetime
     private readonly MemoryCheckpointStore _store = new();
     private readonly List<CaptureGap> _gaps = [];
     private CaptureEngine? _engine;
+    private string _started = "";
 
     private string Name(string s) => $"lm_it_{_tag}_{s}";
     private string BackupFile => $"lm_it_{_tag}.bak";
 
     public async Task InitializeAsync()
     {
+        _started = await ScalarAsync("SELECT CONVERT(varchar(23), SYSDATETIME(), 121)");
         _template = await TestServer.CreateDatabaseAsync("CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, physical varchar(20) NOT NULL);", "t");
         await TestServer.ExecAsync($"BACKUP DATABASE [{_template}] TO DISK = N'{BackupFile}' WITH INIT, COPY_ONLY;");
         foreach (var d in new[] { "a", "b", "c" }) await RestoreAsync(d);
@@ -156,6 +158,72 @@ public sealed class DatabaseIdentityTests : IAsyncLifetime
         for (var i = 101; i <= 160; i++) await InsertAsync("a", i); // the log grows through the same LSNs again
         await ArrivedAsync(Enumerable.Range(101, 60).Select(i => ("a", i)).ToArray());
         Assert.Contains(_gaps, g => g.Database == Name("a"));
+    }
+
+    private static async Task<DatabaseRef> RefAsync(string name)
+    {
+        var (id, incarnation) = await TestServer.IdentityAsync(name);
+        return new DatabaseRef(id, name, incarnation);
+    }
+
+    /// <summary>Everything the miner does to a database.</summary>
+    private static IEnumerable<(string What, Func<Task> Do)> Accesses(SqlConnection conn, DatabaseRef database, LogMiner.Schema.TableLayout table)
+    {
+        yield return ("log read", async () => { await foreach (var _ in new EngineLogReader(conn).ReadAsync(database, null, 100, CaptureScope.CdcTrackedTables, CancellationToken.None)) { } });
+        yield return ("log read without CDC", async () => { await foreach (var _ in new EngineLogReader(conn).ReadAsync(database, null, 100, CaptureScope.AllUserTables, CancellationToken.None)) { } });
+        yield return ("catalog changes", () => CatalogLogReader.ReadAsync(conn, database, null, [], CancellationToken.None));
+        yield return ("layouts", () => SchemaLoader.LoadAsync(conn, database, CaptureScope.CdcTrackedTables, null, new HashSet<long>(), CancellationToken.None));
+        yield return ("oldest unreleased", () => ReplDoneClient.OldestUnreleasedAsync(conn, database, CancellationToken.None));
+        yield return ("table state", () => ReplDoneClient.TableStateAsync(conn, database, CancellationToken.None));
+        yield return ("release", () => ReplDoneClient.MarkDistributedAsync(conn, database, new Lsn(1, 1, 1), new Lsn(1, 1, 2), CancellationToken.None));
+        yield return ("recovery fork", () => DatabaseIdentity.RecoveryForkAsync(conn, database.Id, database.Name, CancellationToken.None));
+        yield return ("identity", () => DatabaseIdentity.VerifyAsync(conn, database, CancellationToken.None));
+        yield return ("historical load", () => new SqlSnapshotSource(TestServer.ConnectionString()).ReadChunkAsync(table, null, 10, CancellationToken.None));
+    }
+
+    private async Task AllRefusedAsync(string state, string back, int error)
+    {
+        var database = await RefAsync(Name("a"));
+        await using var conn = new SqlConnection(TestServer.ConnectionString());
+        await conn.OpenAsync();
+        var table = (await SchemaLoader.LoadAsync(conn, database, CaptureScope.CdcTrackedTables, null, new HashSet<long>(), CancellationToken.None)).Tables.Single();
+        await TestServer.ExecAsync(state);
+        try
+        {
+            foreach (var (what, access) in Accesses(conn, database, table))
+            {
+                var ex = await Assert.ThrowsAsync<SqlException>(access);
+                Assert.True(ex.Number == error, $"{what}: {ex.Number} {ex.Message}");
+                Assert.Equal(System.Data.ConnectionState.Open, conn.State); // other databases are read on it, too
+            }
+        }
+        finally { await TestServer.ExecAsync(back); }
+        foreach (var (what, access) in Accesses(conn, await RefAsync(Name("a")), table).Where(a => a.What is not "release")) await access();
+    }
+
+    /// <summary>Its one connection belongs to whoever is restoring, renaming or repairing it - also while that connection is not open.</summary>
+    [Fact]
+    public Task A_single_user_database_is_left_alone() =>
+        AllRefusedAsync($"ALTER DATABASE [{Name("a")}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;", $"ALTER DATABASE [{Name("a")}] SET MULTI_USER;", DatabaseIdentity.BusyError);
+
+    /// <summary>927 is what SQL Server answers at the door. Anything else would mean that the database is looked at from outside, which at the wrong
+    /// moment hangs the instance (experiments/36).</summary>
+    [Fact]
+    public Task A_database_that_is_being_restored_is_entered_first() =>
+        AllRefusedAsync($"ALTER DATABASE [{Name("a")}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; ALTER DATABASE [{Name("a")}] SET MULTI_USER; BACKUP LOG [{Name("a")}] TO DISK = 'NUL' WITH NORECOVERY;",
+            $"RESTORE DATABASE [{Name("a")}] WITH RECOVERY;", 927);
+
+    [Fact]
+    public async Task Restores_are_not_refused_while_the_miner_reads()
+    {
+        await StartAsync("a");
+        for (var i = 1; i <= 12; i++)
+        {
+            for (var j = 1; j <= 5; j++) await InsertAsync("a", j);
+            await RestoreAsync("a", over: true); // raises an error when it is refused
+        }
+        await InsertAsync("a", 1000);
+        await ArrivedAsync(("a", 1000));
     }
 
     /// <summary>One database nobody can enter must not keep the others from being captured.</summary>
@@ -321,6 +389,7 @@ public sealed class DatabaseIdentityTests : IAsyncLifetime
     {
         if (_engine is not null) await _engine.DisposeAsync();
         foreach (var d in _databases.Append(_template)) await TestServer.DropDatabaseAsync(d);
+        Assert.Equal("0", await ScalarAsync($"CREATE TABLE #l (d datetime, p nvarchar(60), t nvarchar(max)); INSERT #l EXEC sys.xp_readerrorlog 0, 1, N'Assertion'; SELECT COUNT(*) FROM #l WHERE d >= '{_started}'"));
         await TestServer.ExecAsync($"DECLARE @p nvarchar(500) = CONVERT(nvarchar(400), SERVERPROPERTY('InstanceDefaultBackupPath')) + N'\\{BackupFile}'; EXEC master.sys.xp_delete_files @p;");
     }
 }
