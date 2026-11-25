@@ -23,7 +23,7 @@ internal static class LoadGen
         var writers = int.Parse(Program.Opt(args, "--writers") ?? "16", CultureInfo.InvariantCulture);
         var prefix = Program.Opt(args, "--prefix") ?? "lmbench_";
         var outFile = Program.Opt(args, "--out") ?? throw new ArgumentException("--out");
-        _ = timeBeginPeriod(1);
+        if (OperatingSystem.IsWindows()) _ = timeBeginPeriod(1);
         var conns = new SqlConnection[dbs + 1];
         await Parallel.ForEachAsync(Enumerable.Range(1, dbs), new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (db, ct) =>
         {
@@ -36,6 +36,7 @@ internal static class LoadGen
         });
         var busy = Enumerable.Range(0, dbs + 1).Select(_ => new SemaphoreSlim(1)).ToArray();
         var sent = new ConcurrentDictionary<long, int>();
+        var took = new ConcurrentDictionary<long, double>(); // the insert itself: the commit waits for the log to be on disk
         Console.WriteLine("READY");
         Console.ReadLine();
         var start = Stopwatch.StartNew();
@@ -58,11 +59,12 @@ internal static class LoadGen
                     while (!sent.TryAdd(stamp, db)) stamp++;
                     await using var cmd = Insert(conns[db], rng.Next(1, 1000), rng.Next(1, 100000), stamp);
                     await cmd.ExecuteNonQueryAsync();
+                    took[stamp] = (E2EBench.NowMicros() - stamp) / 1000.0;
                 }
                 finally { busy[db].Release(); }
             }
         })));
-        await File.WriteAllLinesAsync(outFile, sent.Select(s => $"{s.Key} {s.Value}"));
+        await File.WriteAllLinesAsync(outFile, sent.Select(s => string.Create(CultureInfo.InvariantCulture, $"{s.Key} {s.Value} {took.GetValueOrDefault(s.Key):F1}")));
         Console.WriteLine($"SENT {sent.Count}");
         foreach (var c in conns) if (c is not null) await c.DisposeAsync();
         return 0;

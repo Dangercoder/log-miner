@@ -227,7 +227,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         if (_engine.LongestPump is { } pump && pump.Since > TimeSpan.FromSeconds(60)) log.LogError("health: {Database} has been waiting for the destination or the server for {Seconds:F0} s", pump.Database, pump.Since.TotalSeconds);
         log.LogInformation("health: {Dbs} databases, {Events} events, {Open} open txns, {Faulted} faulted; sink {Sink} healthy={Healthy} pending={Pending} oldest={Oldest}",
             captures.Count, captures.Sum(c => c.EventsPublished), captures.Sum(c => c.OpenTransactions), faulted.Count, h.Sink, h.Healthy, h.PendingMessages, h.OldestPendingAge);
-        if (_signal is { Pushing: true } d) log.LogInformation("health: doorbell pushing, {Pushed} log flushes, {Audit} found by the audit", d.Pushed, d.FoundByAudit);
+        if (_signal is { Pushing: true } d) log.LogInformation("health: doorbell pushing, {Pushed} log flushes, {Audit} found by the audit, {Retries} early reads repeated, {GivenUp} given up", d.Pushed, d.FoundByAudit, _engine.BellRetries, captures.Sum(c => c.BellsGivenUp));
         else if (_signal is { PushProblem: { } why }) log.LogWarning("health: doorbell POLLING (higher latency and CPU): {Problem}", why);
         if (captures.Sum(c => c.Gaps) is > 0 and var gapCount) log.LogCritical("health: {Gaps} gap(s) detected since start, see logminer.dbo.gaps", gapCount);
         if (_engine.ForeignReleases is { Count: > 0 } foreign) log.LogError("health: someone else releases the log of {Count} database(s), e.g. {Db}", foreign.Count, foreign.First());

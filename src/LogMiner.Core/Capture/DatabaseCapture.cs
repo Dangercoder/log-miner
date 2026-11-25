@@ -1,4 +1,5 @@
 ﻿using LogMiner.Events;
+using LogMiner.Log;
 using LogMiner.Pipeline;
 using LogMiner.Rows;
 using LogMiner.Schema;
@@ -96,6 +97,9 @@ public sealed class DatabaseCapture
     private bool _written; // something was written, which block is not known
     private bool _unhardened;
     private int _bellRetries;
+    internal const int MaxBellRetries = 40;
+    /// <summary>Pushed blocks that could not be read for as long as it was tried (they are found by the audit, or by the sweep).</summary>
+    public long BellsGivenUp { get; private set; }
     /// <summary>A log block was written (which one, if it is known): the next pump is expected to read it.</summary>
     public void Ring(Lsn block)
     {
@@ -107,20 +111,21 @@ public sealed class DatabaseCapture
     }
 
     /// <summary>
-    /// After a pump: null when it reached the newest block that was pushed, otherwise when to try again. A block is readable when it is
-    /// pushed (measured), but a change that would otherwise wait for the next one or for the sweep is worth asking twice. Gives up after a
-    /// few times: a pump may have good reasons not to read (held for its start point).
-    /// <para>The poll notices a write when it is <i>issued</i>, and log is only read when it is on disk: while the read ends before log that is
-    /// not, it is asked again, for as long as a disk may reasonably take (8 s).</para>
+    /// After a pump: null when it reached the newest block that was pushed, otherwise when to try again: log is only read when it is on disk. The
+    /// push may come before that (SQL Server on Linux announces a write before it is flushed: measured, 4 reads too early per flush, 8 % of them by
+    /// more than 63 ms), and the poll notices a write when it is <i>issued</i>. Nobody else asks for the change before the next one or the sweep,
+    /// so it is tried for as long as a disk may reasonably take (8 s). Then it is given up: a pump may have good reasons not to read (held for its
+    /// start point).
     /// </summary>
     public TimeSpan? RetryForBell()
     {
         lock (_gate)
         {
             var issued = _written && _unhardened;
-            if (!issued && (_bell.IsZero || _lastLsn >= _bell) || _bellRetries >= (issued ? 40 : 6))
+            var ahead = !_bell.IsZero && _lastLsn < _bell;
+            if (!issued && !ahead || _bellRetries >= MaxBellRetries)
             {
-                if (_bellRetries >= 6) _bell = default;
+                if (_bellRetries >= MaxBellRetries) (_bell, BellsGivenUp) = (default, BellsGivenUp + 1);
                 _bellRetries = 0;
                 _written = false;
                 return null;
@@ -206,6 +211,8 @@ public sealed class DatabaseCapture
     private void ResetToCheckpoint()
     {
         _assembler = NewAssembler();
+        if (_changingObjects.Count > 0) _objectsChanged = true; // it may commit before where reading starts again
+        _changingObjects.Clear();
         _ready.Clear();
         _preparing.Clear();
         _caughtUp = false;
@@ -259,8 +266,24 @@ public sealed class DatabaseCapture
         return new Checkpoint(Name, Incarnation, restart, _ackedCommit, _ackedBegin, DateTimeOffset.UtcNow, _held && _fullRelease != _ackedCommit, _resumedAt, _resumedInGap);
     }
 
-    /// <summary>The set of tables may have changed without a trace in the log (CDC disabled on one, a new table): load the layouts again.</summary>
+    /// <summary>The set of tables may have changed (CDC disabled on one, a new table): load the layouts again.</summary>
     public void RefreshSchema() { lock (_gate) _schemaStale = true; }
+
+    private readonly HashSet<ulong> _changingObjects = []; // transactions that wrote to the catalog's table of objects and have not ended
+    private bool _objectsChanged;
+
+    // What committed before the layouts were read is in them (a start reads log that reaches back to when CDC was enabled).
+    private void ObjectsMayHaveChanged(Lsn commit)
+    {
+        if (_schema is null || (!_schema.AsOf.IsZero && commit < _schema.AsOf)) return;
+        _objectsChanged = true;
+        _namesStale = true;
+    }
+
+    private bool _namesStale;
+
+    /// <summary>Whether tables were created, dropped or renamed, or CDC was enabled or disabled, since the last call.</summary>
+    public bool TakeObjectsChanged() { lock (_gate) { var changed = _objectsChanged; _objectsChanged = false; return changed; } }
 
     /// <summary>The database is published for transactional replication: its log is the Log Reader Agent's to release.</summary>
     public bool ReleasedByOthers { get; init; }
@@ -429,6 +452,15 @@ public sealed class DatabaseCapture
                 throw new LogTruncatedException(_skipThrough, r.Lsn);
             lock (_gate)
             {
+                if (r.Operation == LogOperation.ObjectsChanged)
+                {
+                    _changingObjects.Add(r.TransactionId);
+                    _lastLsn = r.Lsn;
+                    continue;
+                }
+                // the first record of a read may be the last of the one before: its transaction is not in the set any more
+                if (_changingObjects.Count > 0 && r.Operation is LogOperation.CommitXact or LogOperation.AbortXact && _changingObjects.Remove(r.TransactionId) && r.Operation == LogOperation.CommitXact)
+                    ObjectsMayHaveChanged(r.Lsn);
                 if (r.Lsn == _lastLsn) continue; // a read starts with the last record of the one before (anything older: out of order, an error)
                 _assembler.Process(r, committed);
                 _lastLsn = r.Lsn;
@@ -523,7 +555,7 @@ public sealed class DatabaseCapture
             foreach (var what in schema.Rewritten(previous)) _notices.Enqueue(what + ". Consumers have to follow the DDL, or load the table again: rows nobody wrote are not published.");
             foreach (var t in schema.NoLongerCaptured(previous)) _notices.Enqueue($"{t} is NOT captured any more (dropped, or CDC was disabled)");
         }
-        lock (_gate) { _schema = schema; _schemaStale = false; }
+        lock (_gate) { _schema = schema; _schemaStale = _namesStale = false; }
     }
 
     /// <summary>Recorded before the new layouts are used; a failure to record faults the stream and is tried again.</summary>
@@ -574,7 +606,7 @@ public sealed class DatabaseCapture
         {
             // a transaction that changed the schema may also have changed rows before and after the DDL: load first, then each
             // record finds the layout that was valid at its own LSN
-            if (_schemaStale || (txn.HasSchemaChange && IsNewerThanSchema(txn))) await ReloadSchemaAsync(source, txn, ct);
+            if (_schemaStale || _namesStale || (txn.HasSchemaChange && IsNewerThanSchema(txn))) await ReloadSchemaAsync(source, txn, ct);
             events = await BuildAsync(source, txn, ct);
         }
         // rows read with the layout from before this DDL would be missing (or misreading) columns: read that chunk again

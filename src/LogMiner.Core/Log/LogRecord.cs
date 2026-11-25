@@ -18,6 +18,9 @@ public enum LogOperation : byte
     /// <summary>Replicated records that say nothing a row record of the same transaction does not say again: LOB values and update/prepare
     /// brackets (experiments/28). They count towards <see cref="LogRecord.ReplicatedRecords"/>.</summary>
     ReplicationInfo,
+    /// <summary>Not a record but a marker (no payload): something wrote to the catalog's table of objects (sys.sysschobjs). Tables were created, dropped
+    /// or renamed, or CDC was enabled or disabled on one, if its transaction commits.</summary>
+    ObjectsChanged,
 }
 
 public enum LogContext : byte
@@ -91,6 +94,7 @@ public sealed class LogRecord
         "LOP_REPL_COMMAND" => LogOperation.ReplCommand,
         "LOP_HOBT_DDL" => LogOperation.HobtDdl,
         "LOP_TEXT_INFO_BEGIN" or "LOP_TEXT_INFO_END" or "LOP_TEXT_VALUE" or "LOP_BEGIN_UPDATE" or "LOP_END_UPDATE" or "LOP_PREP_XACT" => LogOperation.ReplicationInfo,
+        "LOP_OBJECTS_CHANGED" => LogOperation.ObjectsChanged,
         _ => LogOperation.Other,
     };
 

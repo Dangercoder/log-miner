@@ -37,14 +37,6 @@ public static class ReplDoneClient
         return oldest;
     }
 
-    /// <summary>Changes when a table is created, dropped, or CDC is enabled or disabled on one.</summary>
-    public static async Task<int> TableStateAsync(SqlConnection conn, DatabaseRef database, CancellationToken ct)
-    {
-        await using var cmd = Inside(conn, database, "SELECT ISNULL(CHECKSUM_AGG(CHECKSUM(object_id, is_tracked_by_cdc)), 0) FROM sys.tables WHERE is_ms_shipped = 0;");
-        try { return (int)(await cmd.ExecuteScalarAsync(ct))!; }
-        catch (SqlException ex) when (DatabaseIdentity.IsChanged(ex)) { throw new DatabaseChangedException(database, ex); }
-    }
-
     private static SqlCommand Inside(SqlConnection conn, DatabaseRef database, string statement)
     {
         var cmd = DatabaseIdentity.Inside(conn, database, statement, ", @x binary(10), @s binary(10)", ", @x, @s");

@@ -16,6 +16,8 @@ namespace LogMiner.SqlServer;
 /// error 9003 (severity 20) which kills the session.</item>
 /// <item>Only hardened log is read. The function also returns blocks that are still in memory, whose transactions a crash un-happens and
 /// whose LSNs are then used again (experiments/29). Of those only the fact that they are there is taken (<see cref="Unhardened"/>).</item>
+/// <item>Allocation unit 281474978938880 is sys.sysschobjs, in every database (experiments/37): CDC enabled or disabled on a table, and a table that is
+/// never enabled, leave no other trace in what is read. (Asking the catalog instead costs 10 ms per database.)</item>
 /// <item>Filtered server-side to replicated/compensation records plus every commit/abort, plus one payload-free progress
 /// marker per log block (slot 0001). Without markers a scan that matches nothing cannot advance, and every later read would
 /// re-scan the same log - measured: 80-130 ms pumps that saturated the workers. Markers arrive as
@@ -44,9 +46,9 @@ public sealed class EngineLogReader(SqlConnection connection)
                CASE WHEN CONVERT(int, [Flag Bits]) & 1 = 1 THEN [Previous LSN] END, [Replicated Records]
         FROM sys.fn_full_dblog('0x' + @start, NULL, @dbid, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         CROSS APPLY (SELECT CASE WHEN [Current LSN] >= @end THEN 0 WHEN (CONVERT(int, [Flag Bits]) & 5) <> 0 OR Operation IN (N'LOP_COMMIT_XACT', N'LOP_ABORT_XACT') THEN 1 ELSE 0 END) k(keep)
-        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' ELSE N'LOP_PROGRESS' END) m(keep, op)
+        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' WHEN AllocUnitId = 281474978938880 THEN N'LOP_OBJECTS_CHANGED' ELSE N'LOP_PROGRESS' END) m(keep, op)
         -- one progress marker per log block: the scan position always advances. Of what is not on disk: whether there is a captured change among it.
-        WHERE m.keep = 1 OR ([Current LSN] < @end AND ([Current LSN] LIKE N'%:0001' OR [Current LSN] = @start)) OR ([Current LSN] >= @end AND CONVERT(int, [Flag Bits]) & 4 = 4)
+        WHERE m.keep = 1 OR ([Current LSN] < @end AND ([Current LSN] LIKE N'%:0001' OR [Current LSN] = @start OR AllocUnitId = 281474978938880)) OR ([Current LSN] >= @end AND CONVERT(int, [Flag Bits]) & 4 = 4)
         OPTION (MAXDOP 1) /*logminer-read*/;
         """;
 
@@ -62,7 +64,7 @@ public sealed class EngineLogReader(SqlConnection connection)
                                    OR (Context IN (N'LCX_HEAP', N'LCX_CLUSTERED', N'LCX_MARK_AS_GHOST')
                                        AND Operation IN (N'LOP_INSERT_ROWS', N'LOP_DELETE_ROWS', N'LOP_MODIFY_ROW', N'LOP_MODIFY_COLUMNS'))
                             THEN 1 ELSE 0 END * CASE WHEN [Current LSN] >= @end THEN 0 ELSE 1 END) k(keep)
-        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' ELSE N'LOP_PROGRESS' END) m(keep, op)
+        CROSS APPLY (SELECT k.keep, CASE WHEN k.keep = 1 AND ISNULL(AllocUnitId, 0) <> 281474978938880 THEN Operation WHEN [Current LSN] >= @end THEN N'LOP_UNHARDENED' WHEN AllocUnitId = 281474978938880 THEN N'LOP_OBJECTS_CHANGED' ELSE N'LOP_PROGRESS' END) m(keep, op)
         WHERE m.keep = 1 OR ([Current LSN] < @end AND ([Current LSN] LIKE N'%:0001' OR [Current LSN] = @start)) OR ([Current LSN] >= @end AND Operation = N'LOP_COMMIT_XACT')
         OPTION (MAXDOP 1) /*logminer-read*/;
         """;

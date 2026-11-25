@@ -51,7 +51,6 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
     private readonly ConcurrentDictionary<string, string> _notOpened = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _missing = new(); // captured before, gone or closed now: looked for more often for a while
     private readonly ConcurrentDictionary<string, DatabaseCapture> _pumping = new(); // by name: what identifies a stream at the destination
-    private readonly ConcurrentDictionary<int, int> _tableStates = new();
     private CancellationTokenSource? _cts;
     private Task? _run;
     private readonly TaskCompletionSource _failure = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -318,10 +317,8 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
             Lsn? oldest;
             try
             {
-                // CDC disabled on one table, or a table that was never enabled: neither leaves a trace in the log that is read
-                var tables = await ReplDoneClient.TableStateAsync(conn, c.Database, ct);
-                if (_tableStates.TryGetValue(c.DatabaseId, out var before) && before != tables) { c.RefreshSchema(); MarkDirty(c); }
-                _tableStates[c.DatabaseId] = tables;
+                // CDC disabled on one table, or a table that was never enabled: nothing that is captured says so
+                if (c.TakeObjectsChanged()) { c.RefreshSchema(); MarkDirty(c); }
                 if (c.Durable is not { Held: true }) continue;
                 oldest = await ReplDoneClient.OldestUnreleasedAsync(conn, c.Database, ct);
             }
@@ -683,7 +680,6 @@ public sealed class CaptureEngine(CaptureOptions options, ILogActivitySignal sig
                         $"the database was restored or re-created (was {old.Incarnation})", DateTimeOffset.UtcNow), options.Settings.OnGap == GapPolicy.Resync, ct);
             }
             _captures[id] = c;
-            _tableStates.TryRemove(id, out _);
             _missing.TryRemove(name, out _);
             MarkDirty(c);
         }

@@ -297,6 +297,73 @@ public class GapTests
         Assert.Single(h.Gaps);
     }
 
+    /// <summary>What nothing that is captured says: a new table, CDC off and on. It is in the log as a change to the catalog, once it commits.</summary>
+    [Fact]
+    public async Task Changes_to_the_set_of_tables_are_noticed_in_the_log_and_nothing_else_is()
+    {
+        await using var h = await CaptureHarness.CreateAsync(Ddl, ["t"]);
+        await InsertAsync(h, 1);
+        await h.PumpAllAsync();
+        h.Capture.TakeObjectsChanged();
+        async Task<bool> NoticedAsync(string sql)
+        {
+            await h.SqlAsync(sql);
+            await h.SqlAsync("INSERT dbo.noise (pad) VALUES ('x');"); // a block behind it
+            await h.PumpAllAsync();
+            return h.Capture.TakeObjectsChanged();
+        }
+        Assert.False(await NoticedAsync("INSERT dbo.noise (pad) SELECT TOP (500) 'x' FROM sys.all_objects; UPDATE dbo.noise SET pad = 'y'; SELECT COUNT(*) FROM dbo.noise WHERE pad = 'y'; UPDATE STATISTICS dbo.noise; TRUNCATE TABLE dbo.noise;"));
+        Assert.True(await NoticedAsync("CREATE TABLE dbo.later (id int PRIMARY KEY);"));
+        Assert.False(await NoticedAsync("INSERT dbo.later VALUES (1);"));
+        Assert.False(await NoticedAsync("BEGIN TRAN; CREATE TABLE dbo.never (id int); ROLLBACK;"));
+        await using (var other = new SqlConnection(TestServer.ConnectionString(h.Db) + ";Pooling=false"))
+        {
+            await other.OpenAsync();
+            async Task OnOtherAsync(string sql) { await using var cmd = new SqlCommand(sql, other); await cmd.ExecuteNonQueryAsync(); }
+            await OnOtherAsync("BEGIN TRAN; CREATE TABLE dbo.slow (id int);");
+            Assert.False(await NoticedAsync("INSERT dbo.later VALUES (2);"));
+            await OnOtherAsync("COMMIT;");
+            Assert.True(await NoticedAsync("INSERT dbo.later VALUES (3);"));
+            await OnOtherAsync("BEGIN TRAN; CREATE TABLE dbo.slower (id int);");
+            Assert.False(await NoticedAsync("INSERT dbo.later VALUES (4);"));
+            h.Capture.SetFault(new IOException("read again from the checkpoint"));
+            await OnOtherAsync("COMMIT;");
+            Assert.True(await NoticedAsync("INSERT dbo.later VALUES (5);"));
+        }
+        Assert.True(await NoticedAsync("EXEC sys.sp_cdc_disable_table @source_schema = N'dbo', @source_name = N't', @capture_instance = N'all';"));
+        Assert.True(await NoticedAsync("EXEC sys.sp_rename 'dbo.later', 'later2';"));
+        Assert.True(await NoticedAsync("DROP TABLE dbo.later2;"));
+    }
+
+    [Fact]
+    public async Task The_engine_looks_again_when_the_set_of_tables_changed_and_only_then()
+    {
+        await using var h = await CaptureHarness.CreateAsync(Ddl + "CREATE TABLE dbo.u (id int NOT NULL PRIMARY KEY);", ["t", "u"]);
+        await using var engine = new CaptureEngine(new CaptureOptions
+        {
+            ConnectionString = TestServer.ConnectionString(), DatabaseFilter = n => n == h.Db, Workers = 1, CheckpointInterval = TimeSpan.FromMilliseconds(100),
+            Settings = new CaptureSettings { StartPosition = StartPosition.Auto }, HoldCheckInterval = TimeSpan.FromMilliseconds(200), SweepInterval = TimeSpan.FromSeconds(1),
+        }, new DmvPollSignal(TestServer.ConnectionString(), TimeSpan.FromMilliseconds(20)), new EventEncoder(new EncoderOptions { ServerName = "it" }), new MemorySink(), new MemoryCheckpointStore());
+        await engine.StartAsync(CancellationToken.None);
+        await h.SqlAsync("INSERT dbo.t (id, v) VALUES (1, 0);");
+        var capture = engine.Captures.Single();
+        async Task UntilAsync(Func<bool> condition, string what)
+        {
+            for (var i = 0; i < 100 && !condition(); i++) await Task.Delay(100);
+            Assert.True(condition(), what);
+        }
+        await UntilAsync(() => capture.Schema is not null && capture.EventsPublished >= 1, "started");
+        Assert.Equal(["dbo.noise"], capture.UntrackedTables);
+        await Task.Delay(1500);
+        var loads = capture.SchemaLoads;
+        for (var i = 2; i < 12; i++) { await h.SqlAsync($"INSERT dbo.t (id, v) VALUES ({i}, 0); INSERT dbo.noise (pad) VALUES ('x');"); await Task.Delay(100); }
+        Assert.Equal(loads, capture.SchemaLoads);
+        await h.SqlAsync("CREATE TABLE dbo.v (id int PRIMARY KEY);");
+        await UntilAsync(() => capture.UntrackedTables.Contains("dbo.v"), "a table that is not captured");
+        await h.SqlAsync("EXEC sys.sp_cdc_disable_table @source_schema = N'dbo', @source_name = N'u', @capture_instance = N'all';");
+        await UntilAsync(() => capture.UntrackedTables.Contains("dbo.u"), "CDC disabled on a table");
+    }
+
     [Fact]
     public async Task A_foreign_release_is_reported_while_the_log_is_still_there()
     {

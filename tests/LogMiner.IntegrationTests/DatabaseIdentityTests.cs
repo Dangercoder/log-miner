@@ -191,7 +191,6 @@ public sealed class DatabaseIdentityTests : IAsyncLifetime
         yield return ("catalog changes", () => CatalogLogReader.ReadAsync(conn, database, null, [], CancellationToken.None));
         yield return ("layouts", () => SchemaLoader.LoadAsync(conn, database, CaptureScope.CdcTrackedTables, null, new HashSet<long>(), CancellationToken.None));
         yield return ("oldest unreleased", () => ReplDoneClient.OldestUnreleasedAsync(conn, database, CancellationToken.None));
-        yield return ("table state", () => ReplDoneClient.TableStateAsync(conn, database, CancellationToken.None));
         yield return ("release", () => ReplDoneClient.MarkDistributedAsync(conn, database, new Lsn(1, 1, 1), new Lsn(1, 1, 2), CancellationToken.None));
         yield return ("recovery fork", () => DatabaseIdentity.RecoveryForkAsync(conn, database.Id, database.Name, CancellationToken.None));
         yield return ("identity", () => DatabaseIdentity.VerifyAsync(conn, database, CancellationToken.None));

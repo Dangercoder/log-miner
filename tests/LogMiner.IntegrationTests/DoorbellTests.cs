@@ -415,11 +415,15 @@ public sealed class DoorbellTests : IAsyncLifetime
             Assert.Equal(2 + round, sink.Snapshot().Count);
             Assert.True(engine.BellRetries > retries);
         }
-        // a block that never becomes readable is given up
+        // a block that never becomes readable is given up, after as long as a disk may take
+        Assert.Equal(0, capture.BellsGivenUp);
         await signal.Bells.Writer.WriteAsync(new LogActivity(_dbId, new Lsn(uint.MaxValue, 0, 0)));
-        await Task.Delay(500);
+        await Task.Delay(4000);
+        Assert.Equal(0, capture.BellsGivenUp);
+        for (var i = 0; i < 100 && capture.BellsGivenUp == 0; i++) await Task.Delay(100);
+        Assert.Equal(1, capture.BellsGivenUp);
         var settled = engine.BellRetries;
-        await Task.Delay(300);
+        await Task.Delay(600);
         Assert.Equal(settled, engine.BellRetries);
     }
 

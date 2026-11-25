@@ -114,7 +114,14 @@ internal static class ServiceBench
             var elapsed = clock.Elapsed.TotalSeconds;
             (cpu, sql) = (service.TotalProcessorTime - cpu, await SqlCpuAsync() - sql);
             await loader.WaitForExitAsync();
-            var sent = (await File.ReadAllLinesAsync(sentFile)).Select(l => long.Parse(l.Split(' ')[0], CultureInfo.InvariantCulture)).ToHashSet();
+            await using (var xe = new SqlConnection(Program.ConnectionString()))
+            {
+                await xe.OpenAsync();
+                await using var q = new SqlCommand("SELECT CONCAT('event session: dropped events ', dropped_event_count, ', dropped buffers ', dropped_buffer_count, ', largest event dropped ', largest_event_dropped_size) FROM sys.dm_xe_sessions WHERE name = 'logminer_lab_service'", xe);
+                Console.WriteLine("  " + await q.ExecuteScalarAsync());
+            }
+            var took = (await File.ReadAllLinesAsync(sentFile)).Select(l => l.Split(' ')).ToDictionary(p => long.Parse(p[0], CultureInfo.InvariantCulture), p => double.Parse(p[2], CultureInfo.InvariantCulture));
+            var sent = took.Keys.ToHashSet();
             for (var i = 0; i < 75 && sent.Any(s => !latencies.ContainsKey(s)); i++) await Task.Delay(200);
             await stop.CancelAsync();
             await consuming;
@@ -122,6 +129,13 @@ internal static class ServiceBench
             double P(double q) => l.Length == 0 ? double.NaN : l[Math.Min(l.Length - 1, (int)(q * l.Length))];
             Console.WriteLine(FormattableString.Invariant($"{Arg("--name", "")} dispatch {Arg("--dispatch-ms", "4")} ms, push {Arg("--push", "true")}, {tps} tx/s over {dbs} databases ({also} captured, too; release {release}): {l.Length} of {sent.Count} events, {duplicates} duplicates"));
             Console.WriteLine(FormattableString.Invariant($"issue -> consumed ms: p50 {P(0.5):F1} p90 {P(0.9):F1} p99 {P(0.99):F1} p99.9 {P(0.999):F1} max {(l.Length > 0 ? l[^1] : double.NaN):F1}; over 20 ms: {l.Count(x => x > 20)}"));
+            // the part that is the miner's and NATS's: after the application's commit returned
+            var after = latencies.Where(x => sent.Contains(x.Key)).Select(x => Math.Max(0, x.Value - took[x.Key])).Order().ToArray();
+            double Q(double q) => after.Length == 0 ? double.NaN : after[Math.Min(after.Length - 1, (int)(q * after.Length))];
+            var inserts = sent.Select(s => took[s]).Order().ToArray();
+            Console.WriteLine(FormattableString.Invariant($"the insert itself ms: p50 {inserts[inserts.Length / 2]:F1} p99 {inserts[(int)(0.99 * inserts.Length)]:F1} max {inserts[^1]:F1}; commit -> consumed ms: p50 {Q(0.5):F1} p99 {Q(0.99):F1} p99.9 {Q(0.999):F1} max {(after.Length > 0 ? after[^1] : double.NaN):F1}"));
+            foreach (var (s, ms) in latencies.Where(x => sent.Contains(x.Key) && x.Value > 250).OrderByDescending(x => x.Value).Take(6))
+                Console.WriteLine(FormattableString.Invariant($"  slow: consumed after {ms:F0} ms, its insert took {took[s]:F0} ms"));
             Console.WriteLine(FormattableString.Invariant($"logminer.exe: {cpu.TotalSeconds / elapsed * 100:F1}% of one core, {service.WorkingSet64 / 1048576} MB; its SQL sessions: {sql / elapsed / 10:F1}% of one core"));
             return l.Length == sent.Count && duplicates == 0 ? 0 : 1;
         }
