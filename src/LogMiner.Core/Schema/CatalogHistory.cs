@@ -161,7 +161,8 @@ public static class CatalogHistory
             {
                 foreach (var record in all.OrderByDescending(c => c.Lsn).GroupBy(c => c.Lsn)) // the places of one record, the last one first
                 {
-                    var changed = false;
+                    var (changed, versioned) = (false, false);
+                    var (idAfter, nameAfter) = (BitConverter.ToInt32(nsid), name.ToArray());
                     foreach (var c in record)
                     {
                         var (at, before, after) = ((int)c.Raw.Offset, c.Raw.Row0 ?? [], c.Raw.Row1 ?? []);
@@ -174,15 +175,21 @@ public static class CatalogHistory
                             if (before.Length < cut || after.Length < cut) throw new CatalogHistoryException($"object {key}: the change at {c.Lsn} is not understood");
                             (at, before, after) = (nameAt, before[cut..], after[cut..]);
                         }
-                        if (at - nameAt + after.Length > name.Count || !name.Skip(at - nameAt).Take(after.Length).SequenceEqual(after))
+                        var left = name.Count - (at - nameAt);
+                        if (left < 0) continue; // in the row version behind the name
+                        var of = Math.Min(left, after.Length);
+                        if (!name.Skip(at - nameAt).Take(of).SequenceEqual(after.Take(of)))
                             throw new CatalogHistoryException($"object {key}: the name {last} does not agree with the change at {c.Lsn}");
-                        name.RemoveRange(at - nameAt, after.Length);
+                        versioned |= after.Length >= left; // it may reach into the row version: the name that was ends where its end offset says
+                        name.RemoveRange(at - nameAt, of);
                         name.InsertRange(at - nameAt, before);
                         changed = true;
                     }
                     if (!changed) continue;
+                    if (versioned && name.Count >= 2 && BitConverter.ToUInt16([name[0], name[1]]) - nameAt is var length && length >= 2 && length < name.Count) name.RemoveRange(length, name.Count - length);
                     var id = BitConverter.ToInt32(nsid);
                     var bytes = name.ToArray();
+                    if (id == idAfter && bytes.AsSpan().SequenceEqual(nameAfter)) continue; // a row version only
                     if (bytes.Length < 4 || BitConverter.ToUInt16(bytes) != nameAt + bytes.Length) throw new CatalogHistoryException($"object {key}: the name before the change at {record.Key} is not understood");
                     // a schema that is gone has no name any more (and its id may be another's by now): that it was another one is reported either way
                     renames.Add(new TableRename(record.Key, key, now.SchemaNames.GetValueOrDefault(id) ?? (id == -1 ? table!.Schema : string.Create(CultureInfo.InvariantCulture, $"schema#{id}")),
@@ -219,7 +226,7 @@ public static class CatalogHistory
         {
             var had = Had(i);
             var afterAt = at + ((had + 3) & ~3);
-            if (From(i) < 4 || had < 0 || afterAt > data.Length || To(i) != From(i) + grown) return [c];
+            if (From(i) < 0 || had < 0 || afterAt > data.Length || To(i) != From(i) + grown) return [c];
             for (var b = 0; b < 2; b++) // the end offset lies before the name, where nothing has moved yet
                 if (From(i) <= nameAt + b && nameAt + b < From(i) + had)
                 {
@@ -227,6 +234,9 @@ public static class CatalogHistory
                     ends += (data[afterAt + nameAt + b - From(i)] - data[at + nameAt + b - From(i)]) << (8 * b);
                 }
             var has = i < n - 1 ? To(i + 1) - To(i) - From(i + 1) + From(i) + had : had + ends - grown;
+            // behind the name there may be a row version (row versioning, accelerated database recovery), whose length nothing here tells: a last place that
+            // reaches into it is taken with all there is, and what of it is the name is known when it is undone
+            if (i == n - 1 && (has < 0 || data.Length - afterAt - ((has + 3) & ~3) is < 0 or > 3)) has = data.Length - afterAt;
             if (has < 0 || afterAt + has > data.Length) return [c];
             changes.Insert(0, new CatalogChange
             {
@@ -236,7 +246,7 @@ public static class CatalogHistory
             grown += has - had;
             at = afterAt + ((has + 3) & ~3);
         }
-        return Math.Abs(data.Length - at) > 3 ? [c] : changes;
+        return changes;
     }
 
     private static List<RowsetMove> Moves(List<Change> effective, TableLayout format)
@@ -275,6 +285,7 @@ public static class CatalogHistory
             var length = BinaryPrimitives.ReadInt16LittleEndian(lengths.AsSpan(2 * i));
             if (before >= fixedEnd) break;
             var aligned = (length + 3) & ~3;
+            if (before is >= 0 and < 4 && before == after && length > 0 && before + length <= 4) { at += 2 * aligned; continue; } // the row's header: that it has a version now
             if (before != after || before < 4 || length <= 0 || at + aligned + length > data.Length) throw NotUnderstood();
             changes.Add(new CatalogChange
             {

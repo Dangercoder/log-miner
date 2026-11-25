@@ -105,7 +105,7 @@ public class CatalogRenameProperties
 
     /// <summary>The record of a rename, as SQL Server logs it (experiments/38): what changed in one place, or in several: where each was and is, how long it
     /// was, and both contents, each aligned to four.</summary>
-    private static CatalogChange Rename(uint n, IReadOnlyList<(string Was, string Is)> pieces, (int Was, int Is)? schema)
+    private static CatalogChange Rename(uint n, IReadOnlyList<(string Was, string Is)> pieces, (int Was, int Is)? schema, (byte[] Was, byte[] Is)? version = null)
     {
         string before = string.Concat(pieces.Select(x => x.Was)), after = string.Concat(pieces.Select(x => x.Is));
         var places = new List<(int From, int To, byte[] Was, byte[] Is)>();
@@ -123,6 +123,11 @@ public class CatalogRenameProperties
                 else places.Add((from, to, B(was), B(now)));
             }
             from += 2 * was.Length; to += 2 * now.Length;
+        }
+        if (version is { } v) // directly behind a piece that changed it is one place with it
+        {
+            if (places[^1].From + places[^1].Was.Length == from) places[^1] = (places[^1].From, places[^1].To, [.. places[^1].Was, .. v.Was], [.. places[^1].Is, .. v.Is]);
+            else places.Add((from, to, v.Was, v.Is));
         }
         if (places.Count == 1 && places[0].From == places[0].To) return new CatalogChange
         {
@@ -147,6 +152,7 @@ public class CatalogRenameProperties
         var schema = 5;
         var expected = new List<(string Schema, string Name)> { ("s5", name) };
         var changes = new List<CatalogChange>();
+        var versioned = false;
         for (var i = tc.Draw(Generators.Integers().Min(1).Max(30), "renames"); i > 0; i--)
         {
             // pieces that stay and pieces that change, in turn
@@ -168,7 +174,11 @@ public class CatalogRenameProperties
             if (next == name || next.Length is 0 or > 120) continue;
             (int, int)? moves = tc.Draw(Generators.Integers().Min(0).Max(4), "and the schema") == 0 ? (schema, 11 - schema) : null;
             if (moves is not null) schema = 11 - schema;
-            changes.Add(Rename((uint)(10 * changes.Count + 10), pieces, moves));
+            // row versioning: 14 bytes behind the row; accelerated database recovery: and what the row was before
+            byte[] Version(string label) => [.. tc.Draw(Generators.Lists(Generators.Integers().Min(0).Max(255)).MinSize(14).MaxSize(tc.Draw(Generators.Booleans(), label + " longer") ? 40 : 14), label).Select(b => (byte)b)];
+            (byte[], byte[])? version = tc.Draw(Generators.Integers().Min(0).Max(2), "row version") != 0 ? null : (Version("version was"), Version("version is"));
+            versioned = version is not null;
+            changes.Add(Rename((uint)(10 * changes.Count + 10), pieces, moves, version));
             name = next;
             expected.Add(($"s{schema}", name));
         }
@@ -178,7 +188,7 @@ public class CatalogRenameProperties
         for (var i = 0; i < expected.Count; i++)
             Assert.Equal(expected[i], history.NameAt(Table, new Lsn(1, (uint)(10 * i + 5), 1)) ?? ($"s{schema}", name));
         // of a table that is asked about a record is understood or refused; of another one it does not matter
-        if (changes[^1] is not { Operation: LogOperation.ModifyColumns, Data: { Length: > 8 } data } last) return;
+        if (versioned || changes[^1] is not { Operation: LogOperation.ModifyColumns, Data: { Length: > 8 } data } last) return; // (a row version may be cut as it likes)
         changes[^1] = new CatalogChange { Lsn = last.Lsn, TransactionId = last.TransactionId, Operation = last.Operation, Table = last.Table, Key = last.Key, Row0 = last.Row0, Row1 = last.Row1, Data = data[..^8] };
         Assert.NotNull(Refused(() => CatalogHistory.Build(With(Table), changes, Committed([.. changes]), Formats, default)));
         Assert.Null(Refused(() => CatalogHistory.Build(With(Table + 1), changes, Committed([.. changes]), Formats, default)));

@@ -152,9 +152,14 @@ public class SchemaEvolutionTests
     [InlineData(3, "dropped")]
     [InlineData(4, "back")]
     [InlineData(5, "schema dropped")]
-    public async Task Any_sequence_of_renames(int seed, string end)
+    [InlineData(6, "stays", "ALTER DATABASE CURRENT SET ACCELERATED_DATABASE_RECOVERY = ON")]
+    [InlineData(7, "dropped", "ALTER DATABASE CURRENT SET ACCELERATED_DATABASE_RECOVERY = ON")]
+    [InlineData(8, "stays", "ALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE; ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON")]
+    [InlineData(9, "back", "ALTER DATABASE CURRENT SET ACCELERATED_DATABASE_RECOVERY = ON; ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON")]
+    public async Task Any_sequence_of_renames(int seed, string end, string options = "")
     {
         await using var h = await CaptureHarness.CreateAsync("CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NULL);", ["t"]);
+        if (options.Length > 0) await h.SqlAsync(options);
         await h.SqlAsync("INSERT dbo.t (id) VALUES (0);");
         await h.PumpAllAsync();
         await h.CheckpointAsync(release: true);

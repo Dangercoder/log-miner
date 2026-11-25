@@ -72,7 +72,7 @@ public class CapturePipelineProperties
     [Fact]
     public void What_is_gone_from_the_block_of_the_position_is_reported()
     {
-        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0, maxRows: 2);
+        using var m = new PipelineMachine(useSpool: false, preexistingRows: 0, maxRows: 3); // the marker, the change, the commit
         m.GoneFromTheBlockOfThePosition();
         m.Settle();
         Assert.Equal(1, m.Gaps);
@@ -761,9 +761,10 @@ public class CapturePipelineProperties
             var n = 0;
             foreach (var r in snapshot)
             {
-                if (r.Lsn < from || !PassesServerFilter(r)) continue;
+                if (r.Lsn < from || (r.Lsn != from && !PassesServerFilter(r))) continue;
                 if (n++ >= maxRows) yield break;
-                yield return r;
+                // the record a read starts at always comes, as a marker if it is nothing else (so the beginning of the log is known from the first row on)
+                yield return PassesServerFilter(r) ? r : new LogRecord { Lsn = r.Lsn, Operation = LogOperation.Other, Context = LogContext.Null, TransactionId = r.TransactionId };
             }
         }
 
