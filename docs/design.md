@@ -428,7 +428,7 @@ truncation a gap that was none); a restart right after a truncated position forg
 Again on 2026-11-25, with everything since (held reads, names and layouts as of the change, receipts, safe positions), log release on, 60 s after the start
 (`--warm-s 60`: the first 45-60 s with 1,200 databases are start-up), 12,001 of 12,001 events and 0 duplicates in every run, versions in turn:
 
-| | 2026-11-24 version (ea7a67a), 4 runs | now, 6 runs |
+| | 2026-11-24 version (51c9240), 4 runs | now, 6 runs |
 |---|---|---|
 | p50 | 3.8-3.9 ms | 3.9-4.1 ms |
 | p99 | 6.9-14.1 ms | 7.2-9.2 ms |
