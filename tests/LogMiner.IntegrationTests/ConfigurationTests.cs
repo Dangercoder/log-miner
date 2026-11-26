@@ -192,6 +192,30 @@ public sealed class ConfigurationTests : IDisposable
         Assert.DoesNotContain("S3cret-Value", text, StringComparison.Ordinal);
     }
 
+    /// <summary>In a pod the environment holds the service's NATS user; --creds given by hand replaces it instead of being "a second way to log in".</summary>
+    [Fact]
+    public async Task Verify_takes_creds_over_the_login_in_the_environment()
+    {
+        var creds = Path.Combine(_dir, "reader.creds");
+        await File.WriteAllTextAsync(creds, "a credentials file (never read: nobody listens)");
+        int port;
+        using (var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)) { l.Start(); port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; }
+        var info = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "logminer-verify.exe" : "logminer-verify"))
+        { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true, WorkingDirectory = _dir };
+        foreach (var a in new[] { "--stream", "S", "--url", $"nats://127.0.0.1:{port}", "--creds", creds }) info.ArgumentList.Add(a);
+        info.Environment["LogMiner__Sink__NatsJetStream__User"] = "pod-user";
+        info.Environment["LogMiner__Sink__NatsJetStream__Password"] = "S3cret-Value";
+        using var p = Process.Start(info)!;
+        var output = Task.WhenAll(p.StandardOutput.ReadToEndAsync(), p.StandardError.ReadToEndAsync());
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await p.WaitForExitAsync(cts.Token);
+        var text = string.Concat(await output);
+        Assert.True(p.ExitCode == 2, $"exit code {p.ExitCode}:\n{text}");
+        Assert.Contains($"cannot read stream S at nats://127.0.0.1:{port} with the credentials in {creds}", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("more than one way", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("S3cret-Value", text, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }

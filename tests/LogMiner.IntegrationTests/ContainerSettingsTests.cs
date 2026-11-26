@@ -80,7 +80,7 @@ public sealed class ContainerSettingsTests : IAsyncLifetime, IDisposable
         var script = (await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "create-login.sql")))
             .Replace("$(Login)", Login, StringComparison.Ordinal).Replace("$(Password)", _password, StringComparison.Ordinal)
             .Replace("$(Databases)", $"lm_it_pod_{_tag}_%", StringComparison.Ordinal).Replace("$(StateDatabase)", State, StringComparison.Ordinal)
-            .Replace("$(SelfTest)", "0", StringComparison.Ordinal);
+            .Replace("$(Sysadmin)", "0", StringComparison.Ordinal);
         foreach (var batch in Regex.Split(script, @"^\s*GO\s*$", RegexOptions.Multiline).Where(b => !string.IsNullOrWhiteSpace(b))) await TestServer.ExecAsync(batch);
     }
 
@@ -253,7 +253,7 @@ public sealed class ContainerSettingsTests : IAsyncLifetime, IDisposable
         if (_db.Length > 0) await TestServer.DropDatabaseAsync(_db);
         await TestServer.DropDatabaseAsync(State);
         await TestServer.ExecAsync($"""
-            DECLARE @s sysname = (SELECT name FROM sys.server_event_sessions WHERE name = N'logminer_doorbell_pod-{_tag}'); IF @s IS NOT NULL EXEC('DROP EVENT SESSION [' + @s + '] ON SERVER');
+            DECLARE @s sysname = (SELECT name FROM sys.server_event_sessions WHERE name LIKE N'logminer_doorbell_pod%{_tag}'); IF @s IS NOT NULL EXEC('DROP EVENT SESSION [' + @s + '] ON SERVER');
             DECLARE @k nvarchar(max) = (SELECT STRING_AGG(CONCAT('KILL ', session_id), ';') FROM sys.dm_exec_sessions WHERE login_name = N'{Login}'); EXEC (@k);
             IF DATABASE_PRINCIPAL_ID(N'{Login}') IS NOT NULL DROP USER [{Login}];
             IF SUSER_ID(N'{Login}') IS NOT NULL DROP LOGIN [{Login}];

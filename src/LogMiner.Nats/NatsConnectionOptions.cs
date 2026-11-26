@@ -1,4 +1,5 @@
 using NATS.Client.Core;
+using NATS.NKeys;
 
 namespace LogMiner.Nats;
 
@@ -17,7 +18,7 @@ public sealed record NatsConnectionOptions
     public string? User { get; init; }
     public string? Password { get; init; }
     public string? Token { get; init; }
-    /// <summary>File holding a user's NKey seed (a line beginning with SU).</summary>
+    /// <summary>File holding a user's NKey seed (a line beginning with SU), as nk or nsc write it; a line with the public key may follow.</summary>
     public string? NKeySeedFile { get; init; }
     /// <summary>Credentials file (JWT and NKey seed) of a user of an operator-mode account.</summary>
     public string? CredentialsFile { get; init; }
@@ -88,7 +89,25 @@ public sealed record NatsConnectionOptions
             throw new ArgumentException($"{EnvironmentPrefix}TlsCertFile and {EnvironmentPrefix}TlsKeyFile go together");
         if (mode == NATS.Client.Core.TlsMode.Disable && (o.TlsCaFile ?? o.TlsCertFile) is not null)
             throw new ArgumentException($"{EnvironmentPrefix}TlsMode is Disable, but a CA or client certificate is set");
+        if (o.NKeySeedFile is not null) _ = NKey(o.NKeySeedFile);
         return o;
+    }
+
+    /// <summary>The seed in the file and its public key. (NATS.Net's own NKeyFile did not log in with a file that holds the seed alone, as nk and
+    /// nsc write it: measured with NATS.Net 3.4.1.)</summary>
+    private static (string Seed, string PublicKey) NKey(string file)
+    {
+        var seed = File.ReadLines(file).Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("SU", StringComparison.Ordinal))
+            ?? throw new ArgumentException($"{EnvironmentPrefix}NKeySeedFile: {file} holds no user seed (a line beginning with SU)");
+        try
+        {
+            using var pair = KeyPair.FromSeed(seed);
+            return (seed, pair.GetPublicKey());
+        }
+        catch (Exception ex) // only its type is said: its message might hold the seed
+        {
+            throw new ArgumentException($"{EnvironmentPrefix}NKeySeedFile: the seed in {file} cannot be read ({ex.GetType().Name})", ex);
+        }
     }
 
     /// <summary>The connection options of NATS.Net with these servers, credentials and TLS.</summary>
@@ -98,7 +117,11 @@ public sealed record NatsConnectionOptions
         var auth = NatsAuthOpts.Default;
         if (User is not null) auth = auth with { Username = User, Password = Password };
         else if (Token is not null) auth = auth with { Token = Token };
-        else if (NKeySeedFile is not null) auth = auth with { NKeyFile = NKeySeedFile };
+        else if (NKeySeedFile is not null)
+        {
+            var (seed, publicKey) = NKey(NKeySeedFile); // read at every connection: a rotated Secret is taken up
+            auth = auth with { Seed = seed, NKey = publicKey };
+        }
         else if (CredentialsFile is not null) auth = auth with { CredsFile = CredentialsFile };
         var tls = NatsTlsOpts.Default;
         if (TlsMode is { } mode) tls = tls with { Mode = mode };

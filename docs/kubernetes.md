@@ -63,16 +63,22 @@ Once per instance, as a sysadmin. SQL Server 2022, on Windows or Linux, with TCP
 3. **Login.** Run [`infra/sqlserver/create-login.sql`](../infra/sqlserver/create-login.sql):
 
    ```bash
-   sqlcmd -S sql01 -E -C -i infra/sqlserver/create-login.sql -v Login=logminer Password="<strong password>" Databases="tenant_%" StateDatabase=logminer SelfTest=1
+   sqlcmd -S sql01 -E -C -i infra/sqlserver/create-login.sql -v Login=logminer Password="<strong password>" Databases="tenant_%" StateDatabase=logminer Sysadmin=0
    ```
 
-   The script grants what the miner needs without `sysadmin` (measured; the script's header has the details):
-   - `db_owner` in `master`, in every captured database and in the state database
-   - `VIEW SERVER STATE`
-   - `ALTER ANY EVENT SESSION`, so SQL Server pushes log flushes; without it the miner polls: p99 ~100 ms instead of ~7 ms
-   - with `SelfTest=1`, also `dbcreator`, for the self-test after a SQL Server update
+   Choose one of two logins:
+   - **`Sysadmin=1`**: the simplest. The service verifies every new SQL Server build in a scratch database before it captures (`SelfTest:
+     Require`, the default). That needs `sysadmin`, because the self-test enables CDC there and `sp_cdc_enable_db` asks for it (measured:
+     `dbcreator` is not enough).
+   - **`Sysadmin=0`**: what capturing needs, without `sysadmin` (measured; the script's header has the details):
+     - `db_owner` in `master`, in every captured database and in the state database
+     - `VIEW SERVER STATE`
+     - `ALTER ANY EVENT SESSION`, so SQL Server pushes log flushes; without it the miner polls: p99 ~100 ms instead of ~7 ms
 
-   A database created later needs the user too: run the script again (it is idempotent), or make the login `sysadmin`.
+     This login cannot run the self-test. Set `LogMiner__SelfTest=Off` in `logminer.env`, or the service stops with exit code 4
+     (`Sysadmin privileges are required`). Then run the self-test yourself as a sysadmin after every SQL Server update and every new logminer
+     version (see [5. Deploy and check](#5-deploy-and-check)). A database created later needs the user too: run the script again (it is
+     idempotent).
 4. **Encryption.** The rows of every captured table cross this connection. By default it is encrypted (`Encrypt=Mandatory`) and the server's
    certificate is checked against the CAs the image trusts (the Ubuntu CA bundle). If that check fails:
    - The certificate is issued to another name than `LogMiner__Sql__Host` (an address, an alias, a Kubernetes Service): set
@@ -103,9 +109,11 @@ Once per instance, as a sysadmin. SQL Server 2022, on Windows or Linux, with TCP
   | user and password | `User` (logminer.env), `Password` (secret.env) |
   | token | `Token` (secret.env) |
   | NKey | `NKeySeedFile` (mounted file) |
-  | JWT (operator mode) | `CredentialsFile` (mounted `.creds` file) |
+  | JWT (operator mode) | `CredentialsFile` (mounted `.creds` file; not tested here) |
+  | client certificate | `TlsCertFile` and `TlsKeyFile` (mounted files), with `TlsCaFile` for a CA of your own |
 
-- **Permissions**, if the account restricts them. This example has stream `LOGMINER`; the publish subject is the destination template's:
+- **Permissions**, if the account restricts them. This example has stream `LOGMINER`; the publish subject is the destination template's. Both
+  lists are what the tests run with (nats-server 2.15), and each subject in them is needed:
 
   ```
   # logminer (the service)
@@ -181,17 +189,29 @@ The other pod says `waiting for the lease logminer:sql01 (another instance may b
 - **A changed setting**: edit `logminer.env` or `secret.env`, then `kubectl apply -k` again. The ConfigMap's and Secret's names change with their
   content, so the Deployment rolls.
 - **A new version**: set `newTag` in `kustomization.yaml` and apply. The standby takes over while the other pod is replaced.
-- **Self-test** of the SQL Server build: with `dbcreator` the service runs it by itself after every SQL Server update, before it captures. By hand:
-  `kubectl -n logminer-sql01 exec deploy/logminer -- dotnet /app/logminer/logminer.dll --self-test` (exit code 0: verified).
-- **Does the stream match the tables?** `kubectl -n logminer-sql01 exec deploy/logminer -- dotnet /app/verify/logminer-verify.dll`. It reads the NATS
-  settings from the pod's environment and needs the read permissions shown in [3. Prepare NATS](#3-prepare-nats). It runs inside the pod's memory
-  limit. For a large stream, run the same command as a Job with the same `envFrom`. See [the README](../README.md#does-the-stream-match-the-tables).
+- **Self-test** of the SQL Server build (exit code 0: verified, 4: not). With a `sysadmin` login the service runs it by itself before it
+  captures, once per SQL Server build and logminer version. By hand in the pod (as the pod's login, so only if that is `sysadmin`):
+  `kubectl -n logminer-sql01 exec deploy/logminer -- dotnet /app/logminer/logminer.dll --self-test`. With `SelfTest=Off`, run it as a sysadmin
+  from anywhere that reaches the instance, with the password in your shell's environment:
+  `docker run --rm -e LogMiner__Sql__Host=sql01.example.internal -e LogMiner__Sql__User=<sysadmin> -e LogMiner__Sql__Password <image> --self-test`,
+  or `dotnet run --project src/LogMiner.Service -c Release -- --self-test` with the same variables.
+- **Does the stream match the tables?** Run `logminer-verify`. It reads the same NATS variables as the service, and it needs the read
+  permissions in [3. Prepare NATS](#3-prepare-nats), which the service's list does not have:
+  - If the service's NATS user may also read: `kubectl -n logminer-sql01 exec deploy/logminer -- dotnet /app/verify/logminer-verify.dll`. It
+    runs inside the pod's memory limit.
+  - With a reader of its own, run it where you have that user's credentials:
+    `docker run --rm -e LogMiner__Sink__NatsJetStream__Url=... -e LogMiner__Sink__NatsJetStream__Stream=LOGMINER -e LogMiner__Sink__NatsJetStream__User=logminer-verify -e LogMiner__Sink__NatsJetStream__Password --entrypoint dotnet <image> /app/verify/logminer-verify.dll`
+    (or `dotnet run --project src/LogMiner.Verify -c Release` with the same variables).
+
+  It must end with `RESULT: no difference` or `RESULT: verified`. See [the README](../README.md#does-the-stream-match-the-tables).
 
 ## Settings
 
 Every setting is an environment variable. `__` separates levels, and lists are numbered (`__0`, `__1`, ...). The names follow the configuration
 section `LogMiner` of [appsettings.json](../src/LogMiner.Service/appsettings.json), so `LogMiner:Sql:Host` is `LogMiner__Sql__Host`. An empty value
-counts as not set. A setting that cannot work stops the service at start with exit code 2, and the log names the setting.
+of a connection setting (`LogMiner__Sql__*`, `LogMiner__ConnectionString`, the NATS connection and login) counts as not set. Any other empty
+value (`LogMiner__Workers=`) stops the service, so leave such a line out instead. A setting that cannot work stops the service at start with
+exit code 2, and the log names the setting.
 
 ### SQL Server
 
@@ -223,8 +243,8 @@ All of these start with `LogMiner__Sink__NatsJetStream__`. `logminer-verify` rea
 | `Stream` | `LOGMINER` | |
 | `User` / `Password` | | user and password (**secret**) |
 | `Token` | | **secret** |
-| `NKeySeedFile` | | file with a user's NKey seed |
-| `CredentialsFile` | | `.creds` file (JWT and NKey seed, operator mode) |
+| `NKeySeedFile` | | file with a user's NKey seed, as `nk -gen user` writes it (a line beginning with `SU`) |
+| `CredentialsFile` | | `.creds` file (JWT and NKey seed, operator mode; not tested here) |
 | `TlsMode` | `Auto` | `Auto` (TLS when the URL, a CA or a certificate asks for it, or the server does), `Require`, `Implicit`, `Prefer`, `Disable` |
 | `TlsCaFile` | | PEM file of the CA that signed the server's certificate |
 | `TlsCertFile` / `TlsKeyFile` | | client certificate and key (PEM), if the server checks clients by certificate |
@@ -247,7 +267,7 @@ Only one way to log in may be set. A file setting is checked at start: a missing
 | `LogMiner__ExcludeDatabases__0`, ... | | names not to capture |
 | `LogMiner__StartPosition` | `Auto` | a database without a position: `Auto` (where SQL Server's replication state says, else the end), `Earliest`, `Latest` |
 | `LogMiner__OnGap` | `Resync` | when changes may be missing (log released by someone else, a restore): `Resync` loads the tables again, `Continue` goes on; always recorded in `logminer.dbo.gaps` |
-| `LogMiner__SelfTest` | `Require` | verify a new SQL Server build in a scratch database before capturing: `Require`, `Warn`, `Off` |
+| `LogMiner__SelfTest` | `Require` | verify a new SQL Server build in a scratch database before capturing: `Require`, `Warn`, `Off`. Needs `sysadmin` |
 | `LogMiner__Workers` | 8 | databases read at the same time |
 | `LogMiner__MaxBufferedMb` | 1024 | row images of open transactions per database; a larger transaction stops its database (the log is kept) |
 | `LogMiner__MaxRowsPerRead` | 20000 | |
@@ -295,7 +315,10 @@ pod.
 | `The certificate chain was issued by an authority that is not trusted`, or the name does not match | see the encryption step of [2. Prepare SQL Server](#2-prepare-sql-server): `HostNameInCertificate`, `ServerCertificate` |
 | `Authorization Violation` (NATS) | wrong NATS user, password, token or credentials |
 | `Permissions Violation for Publish to ...` (NATS server log) | the account's permissions: see [3. Prepare NATS](#3-prepare-nats) |
-| `self-test FAILED`, exit code 4 | this SQL Server build changed something logminer relies on. It does not capture, and the log is kept. Open an issue with the log |
+| `self-test FAILED` ... `Sysadmin privileges are required`, exit code 4 | the login is not `sysadmin`: make it one, or set `LogMiner__SelfTest=Off` and run the self-test yourself ([2. Prepare SQL Server](#2-prepare-sql-server)) |
+| `self-test FAILED` with anything else, exit code 4 | this SQL Server build changed something logminer relies on. It does not capture, and the log is kept. Open an issue with the log |
+| `logminer-verify` does not end | its NATS user may not create or delete a consumer: the read permissions in [3. Prepare NATS](#3-prepare-nats) |
+| `logminer-verify`: `RESULT: nothing to verify` although the stream has messages | its NATS user may not fetch (`$JS.API.CONSUMER.MSG.NEXT...`). The exit code is still 0 |
 | `NO LOG IS RELEASED` | the stream does not hold what it acknowledged; see [the README](../README.md#missing-changes-are-never-silent) |
 
 A pod in `CrashLoopBackOff` is usually a configuration problem (exit code 2): `kubectl -n logminer-sql01 logs deploy/logminer --previous`.

@@ -484,8 +484,10 @@ after 60 s; run to run, p99 varies between 7 and 14 ms):
   ~20 s after a takeover (layouts are read again).
 * **What it needs:** ICU and time zone data in the image (log times are in the server's zone, by its Windows name); TCP enabled; a login. `fn_full_dblog` asks for
   **`sysadmin`, or `db_owner` in `master`** (`CONTROL SERVER` is not enough, *measured*); without `sysadmin`: `db_owner` in master, in every captured database
-  and in the state database, `VIEW SERVER STATE`, `ALTER ANY EVENT SESSION`, and `SelfTest` run once by somebody who may create databases (or
-  `dbcreator`). That is a credential worth protecting: Kerberos, a vault, or a network policy that lets only these pods to the instance.
+  and in the state database, `VIEW SERVER STATE`, `ALTER ANY EVENT SESSION` (`infra/sqlserver/create-login.sql`). The self-test needs `sysadmin`: it
+  enables CDC in a scratch database, and `sp_cdc_enable_db` asks for it (*measured* 2026-11-26: with `dbcreator` it fails, "Sysadmin privileges are
+  required"); without `sysadmin`, `SelfTest: Off` and `--self-test` run by a sysadmin. That is a credential worth protecting: Kerberos, a vault, or a
+  network policy that lets only these pods to the instance.
 * **What goes over the network** is the content of every captured table: `Encrypt=true` with a certificate that is checked.
 * **What it costs to be off the host:** the round trips; and SQL Server keeps its log while the network is away (as it does while the miner is down).
   What it gains: the miner's CPU and memory are not the database's, and SQL Server, NATS and the miner do not lose power together.
