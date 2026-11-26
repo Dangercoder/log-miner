@@ -18,16 +18,19 @@ public sealed class HealthServer(IOptions<LogMinerSettings> settings, CaptureWor
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (settings.Value.HealthPort <= 0) return;
+        int port;
+        try { port = settings.Value.HealthPort; }
+        catch (InvalidOperationException) { return; } // a value that cannot be read: the worker says which, and the process ends with exit code 2
+        if (port <= 0) return;
         var delay = TimeSpan.FromSeconds(1);
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                using var listener = new TcpListener(Socket.OSSupportsIPv6 ? IPAddress.IPv6Any : IPAddress.Any, settings.Value.HealthPort);
+                using var listener = new TcpListener(Socket.OSSupportsIPv6 ? IPAddress.IPv6Any : IPAddress.Any, port);
                 if (Socket.OSSupportsIPv6) listener.Server.DualMode = true;
                 listener.Start();
-                log.LogInformation("probes and metrics on port {Port}: /livez, /readyz, /metrics", settings.Value.HealthPort);
+                log.LogInformation("probes and metrics on port {Port}: /livez, /readyz, /metrics", port);
                 while (true)
                 {
                     await _clients.WaitAsync(stoppingToken);
@@ -40,7 +43,7 @@ public sealed class HealthServer(IOptions<LogMinerSettings> settings, CaptureWor
             catch (Exception) when (stoppingToken.IsCancellationRequested) { return; }
             catch (SocketException ex)
             {
-                log.LogError(ex, "the probe port {Port} cannot be used; trying again", settings.Value.HealthPort); // capturing goes on
+                log.LogError(ex, "the probe port {Port} cannot be used; trying again", port); // capturing goes on
                 try { await Task.Delay(delay, stoppingToken); } catch (OperationCanceledException) { return; }
                 delay = TimeSpan.FromSeconds(Math.Min(30, delay.TotalSeconds * 2));
             }

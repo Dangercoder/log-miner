@@ -1,0 +1,29 @@
+# logminer for ONE SQL Server instance. Copy this directory once per instance (e.g. infra/k8s/sql01), then:
+#   1. namespace: below and in namespace.yaml (one namespace per instance)
+#   2. images: where your image is (the GitHub workflow of your fork publishes ghcr.io/<owner>/<repository>, in lower case)
+#   3. logminer.env: the SQL Server, the databases and NATS (nothing secret)
+#   4. cp secret.env.example secret.env, and fill it in (git-ignored: never commit it)
+#   5. kubectl apply -k infra/k8s/sql01
+# A changed setting makes new pods by itself (the ConfigMap's and the Secret's names carry a hash of their content). Step by step: docs/kubernetes.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: logminer-sql01
+resources:
+  - namespace.yaml
+  - ../base
+images:
+  - name: logminer
+    newName: ghcr.io/your-github-user/log-miner
+    newTag: master
+configMapGenerator:
+  - name: logminer-config
+    envs: [ logminer.env ]
+secretGenerator:
+  - name: logminer-secret
+    envs: [ secret.env ]
+  # Files: a NATS credentials file, a CA, the SQL Server's certificate. Put them in this directory (git-ignored: *.creds, *.pem, *.cer, ...),
+  # list them, uncomment this and `patches` below, and point the settings at /etc/logminer/files/<name>.
+  # - name: logminer-files
+  #   files: [ nats.creds, nats-ca.pem ]
+# patches:
+#   - path: files.yaml

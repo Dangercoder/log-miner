@@ -10,7 +10,10 @@ namespace LogMiner.Nats;
 
 public sealed class JetStreamSinkOptions
 {
-    public string Url { get; init; } = "nats://127.0.0.1:4222";
+    /// <summary>Servers, credentials and TLS.</summary>
+    public NatsConnectionOptions Connection { get; init; } = new();
+    /// <summary>Shorthand for <see cref="NatsConnectionOptions.Url"/> of <see cref="Connection"/>.</summary>
+    public string Url { get => Connection.Url; init => Connection = Connection with { Url = value }; }
     public string StreamName { get; init; } = "LOGMINER";
     /// <summary>Subjects the stream captures (must cover the encoder's destination template).</summary>
     public string[] StreamSubjects { get; init; } = ["cdc.>"];
@@ -21,7 +24,6 @@ public sealed class JetStreamSinkOptions
     public TimeSpan AckTimeout { get; init; } = TimeSpan.FromSeconds(10);
     /// <summary>Create the stream when it does not exist (disable when the stream is managed elsewhere). A stream that exists is never changed.</summary>
     public bool ManageStream { get; init; } = true;
-    public string? CredentialsFile { get; init; }
     public string ClientName { get; init; } = $"logminer@{Environment.MachineName}";
 }
 
@@ -171,15 +173,13 @@ public sealed class JetStreamSink(JetStreamSinkOptions options) : ISink
 
     private async Task<Connection> ConnectAsync(CancellationToken ct)
     {
-        var nats = new NatsConnection(NatsOpts.Default with
+        var nats = new NatsConnection(options.Connection.ApplyTo(NatsOpts.Default with
         {
-            Url = options.Url,
             Name = options.ClientName,
-            AuthOpts = options.CredentialsFile is null ? NatsAuthOpts.Default : NatsAuthOpts.Default with { CredsFile = options.CredentialsFile },
             SubPendingChannelFullMode = System.Threading.Channels.BoundedChannelFullMode.Wait,
             HeaderEncoding = Encoding.UTF8, // database and table names are any Unicode; message ids are ASCII by themselves
             IgnoreAuthErrorAbort = true,
-        });
+        }));
         try
         {
             await nats.ConnectAsync().AsTask().WaitAsync(options.AckTimeout, ct);

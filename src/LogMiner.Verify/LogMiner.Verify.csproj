@@ -11,6 +11,8 @@
   <ItemGroup>
     <PackageReference Include="NATS.Net" />
     <PackageReference Include="System.IO.Hashing" />
+    <!-- the connection settings (servers, credentials, TLS) are the service's -->
+    <ProjectReference Include="..\LogMiner.Nats\LogMiner.Nats.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="LogMiner.Verify.Tests" />

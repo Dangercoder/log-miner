@@ -21,5 +21,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Shared\*.cs" LinkBase="Shared" />
+    <!-- run by ContainerSettingsTests as an operator would -->
+    <None Include="..\..\infra\sqlserver\create-login.sql" Link="create-login.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

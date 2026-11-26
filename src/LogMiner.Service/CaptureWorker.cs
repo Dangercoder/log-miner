@@ -71,25 +71,36 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
     private DoorbellSignal? _signal;
     private ISink? _sink;
     private ICheckpointStore? _checkpoints;
+    private string _connectionString = "";
 
     /// <summary>The server restarted, the lease was lost, the destination was not there at boot, a part of the engine stopped: whatever ends a
     /// run, the next one starts from the durable state. Nobody else has to notice.</summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var provider = providers.FirstOrDefault(p => string.Equals(p.Type, settings.Value.Sink.Type, StringComparison.OrdinalIgnoreCase));
-        if (Problem(settings.Value, provider) is { } problem)
+        LogMinerSettings s;
+        ISinkProvider? provider;
+        try
         {
-            log.LogCritical("configuration: {Problem}", problem);
+            s = settings.Value;
+            provider = providers.FirstOrDefault(p => string.Equals(p.Type, s.Sink.Type, StringComparison.OrdinalIgnoreCase));
+            if ((Problem(s, provider) ?? provider!.Problem(SinkSection(s))) is { } problem) throw new ArgumentException(problem);
+            _connectionString = SqlTarget.Resolve(s, OperatingSystem.IsWindows());
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) // InvalidOperationException: a value the binder cannot convert
+        {
+            log.LogCritical("configuration: {Problem}", ex.Message);
             Stop(2);
             return;
         }
+        log.LogInformation("SQL Server: {Sql}", SqlTarget.Describe(_connectionString));
+        if (provider!.Describe(SinkSection(s)) is { } destination) log.LogInformation("sink {Type}: {Destination}", provider.Type, destination);
         var delay = TimeSpan.FromSeconds(1);
         while (!stoppingToken.IsCancellationRequested)
         {
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                if (!await RunAsync(settings.Value, provider!, stoppingToken)) return;
+                if (!await RunAsync(s, provider!, stoppingToken)) return;
             }
             catch (Exception) when (stoppingToken.IsCancellationRequested) { return; }
             catch (Exception ex)
@@ -126,7 +137,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         if (s.Workers < 1 || s.MaxRowsPerRead < 2) return "Workers must be at least 1 and MaxRowsPerRead at least 2";
         if (s.CheckpointIntervalMs < 1 || s.SweepIntervalSeconds < 1 || s.ReleaseIntervalMs < 0) return "CheckpointIntervalMs and SweepIntervalSeconds must be positive, ReleaseIntervalMs not negative";
         if (s.Signal.FullPollIntervalMs < 1 || s.Signal.HotPollIntervalMs < 1) return "the doorbell's poll intervals must be positive";
-        if (string.IsNullOrWhiteSpace(s.ServerName)) return "ServerName must not be empty";
+        if (string.IsNullOrWhiteSpace(s.ServerName)) return "ServerName is not set: set LogMiner__ServerName, the same in every instance (pod) that captures this SQL Server (it names the lease, the positions and the subjects)";
         if (EventEncoder.TemplateProblem(s.Routing.DestinationTemplate) is { } template) return template;
         if (s.Sink.Spool is { Enabled: true } spool && spool.MaxBytes < 2 * spool.SegmentBytes) return "Spool.MaxBytes must be at least twice Spool.SegmentBytes";
         return null;
@@ -135,7 +146,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
     /// <summary>Until it is stopped (false: for good) or something fails (an exception).</summary>
     private async Task<bool> RunAsync(LogMinerSettings s, ISinkProvider provider, CancellationToken stoppingToken)
     {
-        _sink = provider.Create(configuration.GetSection("LogMiner:Sink").GetSection(SectionName(s.Sink.Type)));
+        _sink = provider.Create(SinkSection(s));
         if (s.Sink.Spool.Enabled)
         {
             _sink = new SpoolSink(_sink, new SpoolOptions
@@ -149,7 +160,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         IGapLog gaps = new FileGapLog(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(s.State.File))!, "gaps.jsonl"));
         if (s.State.Type == StateStoreType.SqlServer)
         {
-            var stateCs = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(s.ConnectionString) { InitialCatalog = s.State.Database, ApplicationName = "logminer-state" }.ConnectionString;
+            var stateCs = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(_connectionString) { InitialCatalog = s.State.Database, ApplicationName = "logminer-state" }.ConnectionString;
             _checkpoints = sqlState = new SqlStateStore(stateCs, s.ServerName);
             await sqlState.EnsureSchemaAsync(stoppingToken);
             var gapLog = new SqlGapLog(stateCs, s.ServerName);
@@ -184,7 +195,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         var encoder = new EventEncoder(new EncoderOptions { ServerName = s.ServerName, DestinationTemplate = s.Routing.DestinationTemplate, PartitionKey = s.Routing.PartitionKey });
         _signal = new DoorbellSignal(new DoorbellOptions
         {
-            ConnectionString = s.ConnectionString,
+            ConnectionString = _connectionString,
             Push = s.Signal.Push,
             DispatchInterval = TimeSpan.FromMilliseconds(Math.Max(1, s.Signal.DispatchIntervalMs)),
             SessionName = s.Signal.EventSession is { Length: > 0 } name ? name : DoorbellOptions.DefaultSessionName(s.ServerName),
@@ -195,7 +206,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         }, loggers.CreateLogger<DoorbellSignal>());
         _engine = new CaptureEngine(new CaptureOptions
         {
-            ConnectionString = s.ConnectionString,
+            ConnectionString = _connectionString,
             Scope = s.Scope,
             Settings = new CaptureSettings { StartPosition = s.StartPosition, MaxRowsPerRead = s.MaxRowsPerRead, MaxBufferedBytes = Math.Max(1, s.MaxBufferedMb) * 1024L * 1024, OnGap = onGap },
             Gaps = gaps,
@@ -207,7 +218,7 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
             SweepInterval = TimeSpan.FromSeconds(s.SweepIntervalSeconds),
             DatabaseFilter = BuildFilter(s.Databases, s.ExcludeDatabases),
             SnapshotRequests = s.State.Type == StateStoreType.SqlServer
-                ? new SnapshotRequests(new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(s.ConnectionString) { InitialCatalog = s.State.Database }.ConnectionString, s.ServerName)
+                ? new SnapshotRequests(new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(_connectionString) { InitialCatalog = s.State.Database }.ConnectionString, s.ServerName)
                 : null,
         }, _signal, encoder, _sink, _checkpoints!, loggers.CreateLogger<CaptureEngine>());
 
@@ -269,10 +280,10 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
     private async Task<bool> VerifyServerAsync(LogMinerSettings s, SelfTestLog? remembered, CancellationToken ct)
     {
         if (s.SelfTest == SelfTestMode.Off) return true;
-        var version = await SelfTest.VersionAsync(s.ConnectionString, ct);
+        var version = await SelfTest.VersionAsync(_connectionString, ct);
         if (remembered is not null && await remembered.IsVerifiedAsync(version, ct)) return true;
         log.LogInformation("self-test: verifying SQL Server {Version} with this build in a scratch database", version);
-        var result = await SelfTest.RunAsync(s.ConnectionString, ct);
+        var result = await SelfTest.RunAsync(_connectionString, ct);
         if (remembered is not null) await remembered.SaveAsync(result, ct);
         if (result.DoorbellProblem is { } bell) log.LogWarning("self-test: log flushes are not pushed on SQL Server {Version} ({Problem}); the doorbell will poll", result.ProductVersion, bell);
         if (result.Passed)
@@ -316,6 +327,8 @@ public sealed class CaptureWorker(IOptions<LogMinerSettings> settings, IConfigur
         await base.StopAsync(cancellationToken);
         await TearDownAsync();
     }
+
+    private IConfigurationSection SinkSection(LogMinerSettings s) => configuration.GetSection("LogMiner:Sink").GetSection(SectionName(s.Sink.Type));
 
     private static string SectionName(string type) => string.Concat(type.Split('-').Select(p => p.Length == 0 ? p : char.ToUpperInvariant(p[0]) + p[1..]));
 

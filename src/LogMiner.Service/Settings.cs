@@ -7,10 +7,14 @@ namespace LogMiner.Service;
 /// <summary>Root configuration section "LogMiner".</summary>
 public sealed class LogMinerSettings
 {
-    /// <summary>Logical name of this SQL Server in events and subjects (defaults to the machine name).</summary>
-    public string ServerName { get; set; } = Environment.MachineName;
-    /// <summary>Connection to the instance (master). Shared memory ("lpc:.") is the lowest-latency option on the database host.</summary>
-    public string ConnectionString { get; set; } = "Data Source=lpc:.;Initial Catalog=master;Integrated Security=true;TrustServerCertificate=true;Application Name=logminer";
+    /// <summary>Logical name of this SQL Server in events and subjects, and the name of its lease and positions: the same in every instance (pod) that
+    /// captures it, and never changed. Defaults to the machine name on Windows; required elsewhere (a pod's host name differs from pod to pod).</summary>
+    public string ServerName { get; set; } = OperatingSystem.IsWindows() ? Environment.MachineName : "";
+    /// <summary>A whole SqlClient connection string to the instance (master); or <see cref="Sql"/>, not both. Neither: shared memory ("lpc:.") with
+    /// the process's Windows account, the lowest-latency option on the database host (Windows only).</summary>
+    public string? ConnectionString { get; set; }
+    /// <summary>The connection to the instance in parts (host, login, TLS): what a container is given.</summary>
+    public SqlSettings Sql { get; set; } = new();
     public CaptureScope Scope { get; set; } = CaptureScope.CdcTrackedTables;
     public StartPosition StartPosition { get; set; } = StartPosition.Auto;
     /// <summary>Database name patterns to capture ('*' and '?' wildcards); empty = every CDC-enabled database.</summary>

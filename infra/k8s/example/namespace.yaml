@@ -1,0 +1,4 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logminer-sql01   # the same as `namespace:` in kustomization.yaml
