@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using LogMiner.Nats;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
@@ -21,6 +22,9 @@ internal static class Program
 
           Reads the stream from its first message and compares it with its tables: every change against the row the stream had (chain), and
           every historical load, row by row, against the state the stream has built.
+          The connection is the service's: the environment variables LogMiner__Sink__NatsJetStream__* (Url, Stream, User, Password, Token,
+          NKeySeedFile, CredentialsFile, TlsMode, TlsCaFile, TlsCertFile, TlsKeyFile, TlsInsecureSkipVerify); --stream, --url and --creds
+          take precedence. In a pod: kubectl exec <pod> -- dotnet /app/verify/logminer-verify.dll
           --follow            keep running; report differences as they come; Ctrl+C prints the report and exits with 0
           --json              the report as JSON on standard output
           --strict            exit code 3 when there is no difference but a table is not verified (no complete load to compare with)
@@ -32,8 +36,10 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
-        string url = "nats://127.0.0.1:4222", subject = "cdc.>";
-        string? stream = null, creds = null;
+        string subject = "cdc.>";
+        string? stream = null;
+        var given = new Dictionary<string, string>(StringComparer.Ordinal);
+        NatsConnectionOptions connection;
         bool follow = false, json = false, strict = false, loadRows = true;
         int examples = 5, window = 100_000;
         try
@@ -43,10 +49,10 @@ internal static class Program
                 string Value() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
                 switch (args[i])
                 {
-                    case "--url": url = Value(); break;
+                    case "--url": given["Url"] = Value(); break;
                     case "--stream": stream = Value(); break;
                     case "--subject": subject = Value(); break;
-                    case "--creds": creds = Value(); break;
+                    case "--creds": given["CredentialsFile"] = Value(); break;
                     case "--follow": follow = true; break;
                     case "--json": json = true; break;
                     case "--strict": strict = true; break;
@@ -57,8 +63,13 @@ internal static class Program
                     default: throw new ArgumentException($"unknown argument {args[i]}");
                 }
             }
-            if (stream is null) throw new ArgumentException("--stream is required");
-            if (creds is not null && !File.Exists(creds)) throw new ArgumentException($"credentials file {creds} not found");
+            stream ??= Environment.GetEnvironmentVariable(NatsConnectionOptions.EnvironmentPrefix + "Stream") is { Length: > 0 } fromEnvironment ? fromEnvironment
+                : throw new ArgumentException($"--stream is required (or {NatsConnectionOptions.EnvironmentPrefix}Stream)");
+            // --creds replaces whatever way to log in the environment has (a pod's user and password)
+            string[] logins = ["User", "Password", "Token", "NKeySeedFile"];
+            connection = NatsConnectionOptions.Read(key => given.TryGetValue(key, out var value) ? value
+                : given.ContainsKey("CredentialsFile") && logins.Contains(key) ? null
+                : Environment.GetEnvironmentVariable(NatsConnectionOptions.EnvironmentPrefix + key));
         }
         catch (Exception ex) when (ex is ArgumentException or FormatException or OverflowException)
         {
@@ -75,7 +86,7 @@ internal static class Program
         var notes = new List<string>();
         try
         {
-            await ReadAsync(verifier, url, stream, subject, creds, follow, notes, stop.Token).ConfigureAwait(false);
+            await ReadAsync(verifier, connection, stream, subject, follow, notes, stop.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -83,7 +94,7 @@ internal static class Program
         }
         catch (Exception ex) when (ex is NatsException or TimeoutException or IOException or System.Net.Sockets.SocketException or OperationCanceledException)
         {
-            Console.Error.WriteLine($"cannot read stream {stream} at {url}: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine($"cannot read stream {stream} at {connection.Describe()}: {ex.GetType().Name}: {ex.Message}");
             return 2;
         }
 
@@ -102,24 +113,22 @@ internal static class Program
         return !report.Clean ? 1 : strict && report.Count(Verdict.NotVerifiedYet) + report.Count(Verdict.CannotBeVerified) > 0 ? 3 : 0;
     }
 
-    private static async Task ReadAsync(StreamVerifier verifier, string url, string streamName, string subject, string? creds, bool follow, List<string> notes, CancellationToken ct)
+    private static async Task ReadAsync(StreamVerifier verifier, NatsConnectionOptions connection, string streamName, string subject, bool follow, List<string> notes, CancellationToken ct)
     {
-        var nats = new NatsConnection(NatsOpts.Default with
+        var nats = new NatsConnection(connection.ApplyTo(NatsOpts.Default with
         {
-            Url = url,
             Name = $"logminer-verify@{Environment.MachineName}",
-            AuthOpts = creds is null ? NatsAuthOpts.Default : NatsAuthOpts.Default with { CredsFile = creds },
             HeaderEncoding = Encoding.UTF8,
             // one reader that is never faster than the server: wait, never drop
             SubPendingChannelFullMode = System.Threading.Channels.BoundedChannelFullMode.Wait,
-        });
+        }));
         await using (nats.ConfigureAwait(false))
         {
             await nats.ConnectAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
             var js = new NatsJSContext(nats);
             var stream = await js.GetStreamAsync(streamName, cancellationToken: ct).ConfigureAwait(false);
             var state = stream.Info.State;
-            notes.Add(string.Create(CultureInfo.InvariantCulture, $"stream {streamName} at {url}: {state.Messages} message(s), sequence {state.FirstSeq} to {state.LastSeq}, the first of {state.FirstTs}; subject {subject}"));
+            notes.Add(string.Create(CultureInfo.InvariantCulture, $"stream {streamName} at {connection.Servers}: {state.Messages} message(s), sequence {state.FirstSeq} to {state.LastSeq}, the first of {state.FirstTs}; subject {subject}"));
             if (state.FirstSeq > 1) notes.Add(string.Create(CultureInfo.InvariantCulture, $"the stream no longer holds its first {state.FirstSeq - 1} message(s) (limits or a purge): a table is verified from its first complete load that is still in the stream"));
             if (state.NumDeleted > 0) notes.Add(string.Create(CultureInfo.InvariantCulture, $"{state.NumDeleted} message(s) inside the stream are gone (deleted, or removed by a limit per subject)"));
             foreach (var n in notes) Console.Error.WriteLine(n);

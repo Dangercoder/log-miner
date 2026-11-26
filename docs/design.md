@@ -463,7 +463,8 @@ issuing the insert to the consumer receiving the event from JetStream.
 
 ### Off the database host (a container, Kubernetes)
 The service is managed code and runs as a Linux container as it is (`Dockerfile`, 223 MB, no shell, not root, read-only root file system; `infra/k8s`). Position,
-gaps, requests and the lease are in SQL Server, so a pod has no volume. *Measured* on one machine (the Windows instance, 1,200 databases, 200 tx/s, one run each
+gaps, requests and the lease are in SQL Server, so a pod has no volume. It is configured by environment variables alone; how to deploy it, every setting:
+[kubernetes.md](kubernetes.md). *Measured* on one machine (the Windows instance, 1,200 databases, 200 tx/s, one run each
 after 60 s; run to run, p99 varies between 7 and 14 ms):
 
 | | p50 | p99 | CPU of `logminer` | of its SQL sessions |

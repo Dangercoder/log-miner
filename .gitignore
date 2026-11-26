@@ -7,3 +7,13 @@ TestResults/
 .hegel/
 *.secret
 artifacts/
+# secrets of a deployment (infra/k8s, docs/kubernetes.md): never in git. A fork of a public repository is public.
+secret.env
+*.creds
+*.nk
+*.pem
+*.key
+*.cer
+*.crt
+*.pfx
+*.p12

@@ -15,7 +15,7 @@ engine instead of running CDC capture jobs, built for instances with ~1,000+ dat
 | `src/LogMiner.Verify` | compares the stream with the tables (`logminer-verify`) |
 | `tests/` | Hegel property tests (unit, stateful models, real-engine integration) |
 | `tools/LogMiner.Lab` | experiments and benchmarks (`lab service`, `lab e2e`, `lab xe…`, `lab sql <file>`) |
-| `infra/` | SQL Server install/config scripts, tenant generator, NATS config |
+| `infra/` | SQL Server install/config scripts (state database, login), tenant generator, NATS config, Kubernetes manifests (`infra/k8s`, kustomize) |
 | `experiments/` | the log-format experiments the design rests on, with outputs |
 
 ## Prepare a SQL Server
@@ -42,7 +42,7 @@ GRANT ALTER ANY EVENT SESSION TO [domain\logminer];
 
 ```powershell
 dotnet build -c Release
-# edit src/LogMiner.Service/appsettings.json (connection, databases, sink), then:
+# edit src/LogMiner.Service/appsettings.json (databases, sink), then:
 dotnet run --project src/LogMiner.Service -c Release
 # or install as a Windows service (it comes back from lost connections, leases and destinations by itself; this is for the process itself):
 sc.exe create logminer binPath= "C:\path\to\logminer.exe" start= delayed-auto
@@ -52,7 +52,12 @@ sc.exe failureflag logminer 1
 
 Run two instances (two hosts) for HA, with the same `ServerName`: one holds the lease and captures, the other waits and takes over.
 
-Exit codes: 2 configuration, 4 the self-test failed, 5 a previous run did not come to an end.
+On the database host it connects through shared memory with its Windows account. To connect to another host, set the parts of the connection
+(`LogMiner:Sql`: `Host`, `Port`, `User`, `Password`, `Encrypt`, ...) or one whole `LogMiner:ConnectionString`, and for NATS `LogMiner:Sink:NatsJetStream`
+(`Url`, `User`/`Password`, `Token`, `NKeySeedFile`, `CredentialsFile`, `TlsMode`, `TlsCaFile`, ...). Every setting can also be given as an environment
+variable (`LogMiner__Sql__Host`). All of them: [docs/kubernetes.md](docs/kubernetes.md#settings).
+
+Exit codes: 2 configuration (the log names the setting), 4 the self-test failed, 5 a previous run did not come to an end.
 
 On the NATS server set `sync_interval` well below `ReleaseIntervalMs` (`1s`; the default of 2m is too long) or use R3: what was acknowledged
 since the last sync is lost when its host loses power. The miner notices that and publishes it again from SQL Server's log, which has it for
@@ -60,13 +65,18 @@ since the last sync is lost when its host loses power. The miner notices that an
 
 ### In Kubernetes
 
+Fork the repository, and your fork's GitHub Actions publish the image to `ghcr.io/<owner>/<repository>`. Then, per SQL Server instance:
+
 ```bash
-docker build -t logminer .            # 223 MB, not root, read-only file system
-kubectl apply -f infra/k8s/logminer.yaml   # edit it first: connection (a Secret), databases, NATS
+cp -r infra/k8s/example infra/k8s/sql01            # namespace, image, logminer.env (SQL Server, databases, NATS)
+cp infra/k8s/sql01/secret.env.example infra/k8s/sql01/secret.env   # passwords; git-ignored
+kubectl apply -k infra/k8s/sql01
 ```
 
-Two pods per instance: one captures, the other takes over. No volume is needed. What differs from running on the database host (latency, the rights of the
-login, failover times) is in [docs/design.md](docs/design.md) under *Off the database host*. Probes and metrics are on port 8080 (`LogMiner__HealthPort`).
+Two pods per instance: one captures, the other takes over. No volume is needed; everything is configured by environment variables. The whole path,
+from the fork to a running pod (SQL login, NATS permissions, TLS, every setting, what the log says when something is wrong):
+**[docs/kubernetes.md](docs/kubernetes.md)**. What differs from running on the database host (latency, the rights of the login, failover times) is in
+[docs/design.md](docs/design.md) under *Off the database host*.
 
 ## Verify a SQL Server build
 

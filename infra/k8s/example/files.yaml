@@ -1,0 +1,15 @@
+# Mounts the Secret logminer-files (see kustomization.yaml) read-only at /etc/logminer/files. Used only when `patches` there names it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logminer
+spec:
+  template:
+    spec:
+      volumes:
+        - name: files
+          secret: { secretName: logminer-files }
+      containers:
+        - name: logminer
+          volumeMounts:
+            - { name: files, mountPath: /etc/logminer/files, readOnly: true }

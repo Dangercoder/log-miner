@@ -12,27 +12,44 @@ public interface ISinkProvider
 {
     string Type { get; }
     ISink Create(IConfigurationSection section);
+    /// <summary>What is wrong with the section (null: nothing), checked before anything starts: the service then exits with code 2.</summary>
+    string? Problem(IConfigurationSection section) => null;
+    /// <summary>Where the sink sends to, for the log; never with a secret.</summary>
+    string? Describe(IConfigurationSection section) => null;
 }
 
 public sealed class NatsJetStreamSinkProvider : ISinkProvider
 {
     public string Type => "nats-jetstream";
 
-    public ISink Create(IConfigurationSection section)
+    public ISink Create(IConfigurationSection section) => new JetStreamSink(Options(section));
+
+    public string? Problem(IConfigurationSection section)
+    {
+        try { _ = Options(section); return null; }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return ex.Message; }
+    }
+
+    public string? Describe(IConfigurationSection section)
+    {
+        var o = Options(section);
+        return $"stream {o.StreamName} on {o.Connection.Describe()}";
+    }
+
+    private static JetStreamSinkOptions Options(IConfigurationSection section)
     {
         var o = new JetStreamSinkOptions();
-        return new JetStreamSink(new JetStreamSinkOptions
+        return new JetStreamSinkOptions
         {
-            Url = section["Url"] ?? o.Url,
-            StreamName = section["Stream"] ?? o.StreamName,
+            Connection = NatsConnectionOptions.Read(key => section[key]),
+            StreamName = section["Stream"] is { Length: > 0 } stream ? stream : o.StreamName,
             StreamSubjects = section.GetSection("Subjects").Get<string[]>() ?? o.StreamSubjects,
             Replicas = section.GetValue("Replicas", o.Replicas),
             DuplicateWindow = TimeSpan.FromMinutes(section.GetValue("DuplicateWindowMinutes", o.DuplicateWindow.TotalMinutes)),
             MaxAge = TimeSpan.FromDays(section.GetValue("MaxAgeDays", o.MaxAge.TotalDays)),
             AckTimeout = TimeSpan.FromSeconds(section.GetValue("AckTimeoutSeconds", o.AckTimeout.TotalSeconds)),
             ManageStream = section.GetValue("ManageStream", o.ManageStream),
-            CredentialsFile = section["CredentialsFile"],
-        });
+        };
     }
 }
 

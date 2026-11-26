@@ -1,0 +1,40 @@
+# logminer for one SQL Server instance: two pods, one captures, the other waits and takes over (the lease is an application lock in SQL Server; a pod
+# that lost it cannot write a position any more). No volume: the positions, the gaps and the requests are in the state database on the instance.
+# Configured only by environment variables: the ConfigMap logminer-config (settings) and the Secret logminer-secret (passwords), both made by the
+# overlay (../example). Every setting is in docs/kubernetes.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logminer
+  labels: { app.kubernetes.io/name: logminer }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app.kubernetes.io/name: logminer } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 1 } }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: logminer }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "8080", prometheus.io/path: "/metrics" }
+    spec:
+      terminationGracePeriodSeconds: 45         # it saves the last position and gives the lease up
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1654, runAsGroup: 1654, seccompProfile: { type: RuntimeDefault } }
+      affinity:
+        podAntiAffinity:                        # the two pods on two nodes (one namespace per SQL Server instance)
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: { matchLabels: { app.kubernetes.io/name: logminer } }
+      containers:
+        - name: logminer
+          image: logminer                       # replaced by the overlay's `images` (your registry)
+          envFrom:
+            - configMapRef: { name: logminer-config }
+            - secretRef: { name: logminer-secret }
+          ports: [ { name: http, containerPort: 8080 } ]
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ ALL ] } }
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 2Gi }             # no CPU limit: throttling shows up as latency. MaxBufferedMb (per database) must fit.
+          startupProbe: { httpGet: { path: /livez, port: http }, periodSeconds: 5, failureThreshold: 24, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /livez, port: http }, periodSeconds: 20, failureThreshold: 3, timeoutSeconds: 5 }
+          readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 5, failureThreshold: 3, timeoutSeconds: 5 }
