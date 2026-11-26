@@ -11,7 +11,8 @@ shortened.
 
 | | |
 |---|---|
-| **Completeness** | Every committed change of a captured table is published. Uncommitted and rolled-back work never is. Some events can make changes go missing: someone else released the log, a restore, CDC switched off and on for a table, a renamed table, `ALTER TABLE ... SWITCH`. Each is recorded in `logminer.dbo.gaps` before the stream goes on. By default the affected tables are then loaded again into the stream ([historical loads](#historical-loads-in-the-stream)). Nothing goes missing silently. |
+| **Completeness** | Every committed row change of a captured table that is in the log is published. Uncommitted and rolled-back work never is. Some events can make changes go missing: someone else released the log, a restore, CDC switched off and on for a table, a renamed table, `ALTER TABLE ... SWITCH`. Each is recorded in `logminer.dbo.gaps` before the stream goes on. By default the affected tables are then loaded again into the stream ([historical loads](#historical-loads-in-the-stream)). DDL that gives existing rows a value without writing them only produces a warning in logminer's log ([schema changes](#schema-changes)). |
+| **Start** | The stream begins where capture began (`StartPosition`). Rows that existed before that reach a consumer only through a historical load, so a new consumer starts with one. |
 | **Delivery** | At least once. JetStream drops a message sent again with the same `Nats-Msg-Id` within the stream's duplicate window (10 minutes). After the window, a duplicate is stored again. |
 | **Order** | Per database (default): the stream holds a database's events in commit order, and within a transaction in `seq` order. There is no order between databases. |
 | **Transactions** | The events of a transaction are consecutive in their database's order and share `commit_lsn`; `txn_size` says how many there are. NATS does not deliver them atomically: a reader can see the first before the last has arrived. |
@@ -152,17 +153,20 @@ A transaction that is rolled back (or the part of one undone by a savepoint roll
 
 ### Schema changes
 
-There are no DDL messages. Each image has the columns its table had **at the moment of the change**:
+There are no DDL messages. Each image has the columns its table had **at the moment of the change**. Changes made before a DDL statement keep
+the old shape, even when they are published after it. Treat the set of columns as open. Measured on SQL Server 2022:
 
-- an added column appears in later images
-- a dropped column disappears
-- a renamed column has its new name from then on
-- a column whose type changed has its new type from then on
+| DDL | What arrives |
+|---|---|
+| `ADD c ... NULL` | later images have `c` (`null` until a row is given a value) |
+| `DROP COLUMN c` | later images do not have `c` |
+| `ADD c ... NOT NULL DEFAULT x` | later images have `c`. The rows that existed get `x` **without being written**: nothing is published for them, no gap is recorded, no load is requested. A row's next change shows its value. logminer logs a warning: `column c was added with a value for the rows that existed` |
+| `ALTER COLUMN` that converts values (`int` to `bigint`, ...) | later images have the new type. The existing rows are converted **without row changes in the log**: as above, with the warning `the values of column c were converted from ... to ...` |
+| `sp_rename` of a column | refused by SQL Server on a CDC table (Msg 4928, `Cannot alter column ... because it is 'REPLICATED'`) |
+| `sp_rename` of the table | later changes come under the new name, on the new subject. A gap `Renamed` is recorded, and by default a load of the table under its new name follows, because the consumer's rows are under the old one |
 
-Changes made before the DDL keep the old shape, even when they are published later. Treat the set of columns as open.
-
-A renamed table publishes under its new name, and on the new subject. The rename is a recorded gap (`Renamed`), and by default a load of the table
-under its new name follows, because the consumer's rows are under the old one. A table that is dropped publishes nothing more.
+After either warning, a consumer that needs the existing rows' new values applies the DDL to its copy, or requests a load of the table. A table
+that is dropped publishes nothing more.
 
 ## Ordering
 
@@ -252,17 +256,26 @@ for each message, in stream order (one database's messages in order):
     switch op:
       c, u, d:
           pos = (source.commit_lsn, source.seq)          # strings compare in log order
-          if pos <= position[stream]: acknowledge; continue    # a duplicate
+          if pos <= position[stream]: acknowledge; continue    # a duplicate: applied before, changes nothing below
           c: upsert after          u: upsert after (keep columns that are {"unavailable": true})
-          d: delete before.key
+          d: delete key
           position[stream] = pos
-      r:  upsert after; if a load of this table is open, remember the key     # position untouched
-      l:  begin: open a load (id) for the table: an empty set of keys
-          end:   if the set holds `rows` different keys: delete every key of the table that is not in the set
-                 (c and u keys between begin and end count as seen, too); close the load
+          if the table has an open load: add key to its touched keys (c, u)
+      r:  upsert after                                  # position untouched
+          if the table has an open load with this id: add key to its loaded keys (a set: a re-read chunk counts once)
+          # an r after its load's end (a chunk read again) is only an upsert
+      l:  begin: if a load with this id is open: start it over (both sets empty again)
+                 else open it: loaded keys = {}, touched keys = {}
+          end:   if no load with this id is open: ignore    # it began before you started reading
+                 if size(loaded keys) >= load.rows:        # the load is whole
+                     delete every key of the table that is in neither set
+                 # else: rows of the load are missing; delete nothing
+                 close the load
       other: ignore
     acknowledge
 ```
+
+This is what `logminer-verify` does (`src/LogMiner.Verify/StreamVerifier.cs`).
 
 - **One position per incarnation.** A restored database starts a new incarnation; positions of the old one mean nothing for it, and a load
   follows by default.
@@ -281,4 +294,7 @@ for each message, in stream order (one database's messages in order):
 - **Atomic transactions** in NATS: a reader can see part of one.
 - **Values that are not in the log** (`xml`, `sql_variant`, legacy and off-row LOBs) in changes: `{"unavailable": true}`. Loads have them.
 - **A gap message in the stream.** The load that follows is the signal; `logminer.dbo.gaps` says what and why.
+- **Rows that DDL changes without writing them** (`ADD ... NOT NULL DEFAULT`, an `ALTER COLUMN` that converts values): only a warning in
+  logminer's log. Apply the DDL to your copy, or request a load.
+- **Rows from before the capture began**: only a load brings them.
 - **A stable subject per table.** A rename moves it, and different names can map to one subject.
