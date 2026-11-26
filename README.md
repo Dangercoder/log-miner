@@ -2,7 +2,8 @@
 
 Low-footprint, low-latency change data capture for SQL Server (TDE supported) that mines the **transaction log** through the
 engine instead of running CDC capture jobs, built for instances with ~1,000+ databases, publishing to pluggable sinks
-(NATS JetStream included). Design, measurements and guarantees: [docs/design.md](docs/design.md).
+(NATS JetStream included). Design, measurements and guarantees: [docs/design.md](docs/design.md). What a consumer gets (subjects, message
+format, ordering, delivery guarantees, how to apply the changes): [docs/nats.md](docs/nats.md).
 
 ## Layout
 
