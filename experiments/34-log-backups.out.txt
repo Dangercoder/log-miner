@@ -1,0 +1,62 @@
+Changed database context to 'master'.
+Changed database context to 'lm_bak'.
+Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+SQLServerAgent is not currently running so it cannot be notified of this action.
+what|encryption_state
+----|----------------
+encryption_state|3
+
+Processed 616 pages for database 'lm_bak', file 'lm_bak' on file 1.
+Processed 329 pages for database 'lm_bak', file 'lm_bak_log' on file 1.
+BACKUP DATABASE successfully processed 945 pages in 0.030 seconds (245.963 MB/sec).
+Changed database context to 'lm_bak'.
+Processed 332 pages for database 'lm_bak', file 'lm_bak_log' on file 1.
+The log was not truncated because records at the beginning of the log are pending replication or Change Data Capture. Ensure the Log Reader Agent or capture job is running or use sp_repldone to mark transactions as distributed or captured.
+BACKUP LOG successfully processed 332 pages in 0.009 seconds (287.760 MB/sec).
+Processed 3 pages for database 'lm_bak', file 'lm_bak_log' on file 1.
+The log was not truncated because records at the beginning of the log are pending replication or Change Data Capture. Ensure the Log Reader Agent or capture job is running or use sp_repldone to mark transactions as distributed or captured.
+BACKUP LOG successfully processed 3 pages in 0.004 seconds (5.859 MB/sec).
+Processed 2 pages for database 'lm_bak', file 'lm_bak_log' on file 1.
+The log was not truncated because records at the beginning of the log are pending replication or Change Data Capture. Ensure the Log Reader Agent or capture job is running or use sp_repldone to mark transactions as distributed or captured.
+BACKUP LOG successfully processed 2 pages in 0.005 seconds (3.125 MB/sec).
+Changed database context to 'master'.
+backup_kind|records|replicated|counted_at_commits|rows_in_plaintext|first_lsn|last_lsn
+-----------|-------|----------|------------------|-----------------|---------|--------
+plain|15883|7|7|2|0000003C:00000B10:0001|0000003E:000000E0:0006
+
+Warning: Null value is eliminated by an aggregate or other SET operation.
+backup_kind|records|replicated|counted_at_commits|rows_in_plaintext|first_lsn|last_lsn
+-----------|-------|----------|------------------|-----------------|---------|--------
+compressed|54|1|1|1|0000003E:000000E8:0001|0000003E:00000110:0003
+
+Warning: Null value is eliminated by an aggregate or other SET operation.
+backup_kind|records|replicated|counted_at_commits|rows_in_plaintext|first_lsn|last_lsn
+-----------|-------|----------|------------------|-----------------|---------|--------
+striped, both|19|1|1|1|0000003E:00000118:0001|0000003E:00000130:0003
+
+Warning: Null value is eliminated by an aggregate or other SET operation.
+backup_kind|records|replicated|counted_at_commits|rows_in_plaintext|first_lsn|last_lsn
+-----------|-------|----------|------------------|-----------------|---------|--------
+striped, one|0|NULL|NULL|NULL|NULL|NULL
+
+== threads and hidden schedulers before and after 25 calls
+at|threads|workers|hidden_schedulers|schedulers
+--|-------|-------|-----------------|----------
+before|129|107|10|27
+
+at|threads|workers|hidden_schedulers|schedulers|ms_per_call
+--|-------|-------|-----------------|----------|-----------
+after 25 calls|135|113|10|27|26974.000000
+
+at|threads|workers|hidden_schedulers|schedulers
+--|-------|-------|-----------------|----------
+15 s later|135|113|10|27
+
+-- Caveats (2026-11-24): the 27 s per call was measured while an integration test restored databases on the same instance.
+-- Threads went 129 -> 135 (workers 107 -> 113) and were still there 15 s later; hidden schedulers stayed at 10. So the 2013 hidden-scheduler
+-- leak was not seen, but this run does not show that no threads are kept. One stripe of two: 0 records and no error.

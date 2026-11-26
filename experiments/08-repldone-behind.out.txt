@@ -1,0 +1,31 @@
+﻿-- Changed database context to 'lm_exp08'.
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- batch took 646 ms
+-- Processed 608 pages for database 'lm_exp08', file 'lm_exp08' on file 1.
+-- Processed 149 pages for database 'lm_exp08', file 'lm_exp08_log' on file 1.
+-- BACKUP DATABASE successfully processed 757 pages in 0.038 seconds (155.530 MB/sec).
+-- Warning: Null value is eliminated by an aggregate or other SET operation.
+== n | b | c
+1 | 0000002E:000004D8:0001 | 0000002E:000004D8:001D
+2 | 0000002E:000004E0:0001 | 0000002E:000004E0:0003
+-- opentran before:
+== lm_exp08 | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (45:2792:1)
+-- DBCC execution completed. If DBCC printed error messages, contact your system administrator.
+-- repldone(B)
+-- opentran after B:
+-- No active open transactions.
+-- DBCC execution completed. If DBCC printed error messages, contact your system administrator.
+-- repldone(A) - behind the distributed point
+-- repldone(A): no error
+-- opentran after A:
+-- No active open transactions.
+-- DBCC execution completed. If DBCC printed error messages, contact your system administrator.
+-- Changed database context to 'master'.

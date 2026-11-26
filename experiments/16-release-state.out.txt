@@ -1,0 +1,92 @@
+-- Changed database context to 'lab_gap'.
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- Processed 600 pages for database 'lab_gap', file 'lab_gap' on file 1.
+-- Processed 149 pages for database 'lab_gap', file 'lab_gap_log' on file 1.
+-- BACKUP DATABASE successfully processed 749 pages in 0.016 seconds (365.478 MB/sec).
+== step
+0 enabled, no changes
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (45:2792:1)
+== commit_lsn | begin_lsn
+0000002E:000003D0:0001 | 0000002D:00000AE8:0001
+0000002E:000004D8:001D | 0000002E:000004D8:0001
+0000002E:000004E0:0003 | 0000002E:000004E0:0001
+0000002E:000004E8:0003 | 0000002E:000004E8:0001
+== step
+1 three changes, none released
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (45:2792:1)
+-- batch took 422 ms
+-- Changed database context to 'lab_gap'.
+== step | released_commit | released_begin
+2 released through the second | 0000002E:000004D8:001D | 0000002E:000004D8:0001
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (46:1248:1)
+-- Changed database context to 'lab_gap'.
+== step
+3 foreign sp_repldone @reset = 1
+== step
+4 one more change
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (46:1264:1)
+-- Changed database context to 'lab_gap'.
+== step
+5 cdc disabled on the table
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (46:1264:1)
+-- Processed 262 pages for database 'lab_gap', file 'lab_gap_log' on file 1.
+-- BACKUP LOG successfully processed 262 pages in 0.001 seconds (2046.875 MB/sec).
+== step | log_min_lsn | log_end_lsn | log_truncation_holdup_reason
+5b after log backup | 0000002E:000004F0:0001 | 0000002E:00000BF0:0001 | NOTHING
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+== step
+6 re-enabled, one change
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (46:1264:1)
+== capture_instance | start_lsn | create_date
+dbo_t | 0x0000002E00000BF0003B | 2026-11-24 07:34:50.8200000
+-- Changed database context to 'lab_gap'.
+== step
+7 cdc disabled on the database
+-- Processed 330 pages for database 'lab_gap', file 'lab_gap_log' on file 1.
+-- BACKUP LOG successfully processed 330 pages in 0.003 seconds (858.072 MB/sec).
+-- Processed 2 pages for database 'lab_gap', file 'lab_gap_log' on file 1.
+-- BACKUP LOG successfully processed 2 pages in 0.000 seconds (0.000 MB/sec).
+== step | log_min_lsn | log_end_lsn | log_truncation_holdup_reason
+7b after log backups | 00000030:00000198:0002 | 00000030:000001C0:0001 | NOTHING
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+== step
+8 cdc enabled again, one change
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (48:2816:1)
+== capture_instance | start_lsn | create_date
+dbo_t | 0x0000003000000B400036 | 2026-11-24 07:34:51.0970000
+== log_min_lsn
+00000030:00000198:0002
+-- batch took 278 ms
+-- Changed database context to 'master'.

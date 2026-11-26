@@ -1,0 +1,29 @@
+-- Changed database context to 'lab_gap'.
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+== step | capture_instance | source_object_id | start_lsn | create_date
+enabled | dbo_t | 901578250 | 0x0000002F00000AE8003A | 2026-11-24 07:59:57.0270000
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+== step | capture_instance | start_lsn
+second instance | dbo_t | 0x0000002F00000AE8003A
+second instance | second | 0x00000030000004200034
+== step | capture_instance | start_lsn
+first dropped | second | 0x00000030000004200034
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+== step | capture_instance | start_lsn
+disabled + enabled | dbo_t | 0x00000031000009280037
+== commit_lsn | begin_lsn
+00000030:000003D0:0001 | 0000002F:00000AE8:0001
+00000030:00000BF0:0010 | 00000030:000003E0:0001
+00000032:00000838:001C | 00000031:000008E8:0001
+== Transaction Name | repl_commands | first_lsn
+user_transaction | 1 | 0000002F:00000AE8:003B
+user_transaction | 1 | 00000030:00000420:0035
+user_transaction | 1 | 00000031:00000928:0038
+-- batch took 845 ms
+-- Changed database context to 'master'.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.

@@ -1,0 +1,153 @@
+-- Changed database context to 'lab_gap'.
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- Processed 600 pages for database 'lab_gap', file 'lab_gap' on file 1.
+-- Processed 149 pages for database 'lab_gap', file 'lab_gap_log' on file 1.
+-- BACKUP DATABASE successfully processed 749 pages in 0.017 seconds (343.979 MB/sec).
+-- batch took 397 ms
+-- Changed database context to 'lab_gap'.
+== step | commit_lsn | begin_lsn
+released through | 0000002E:000004D8:001D | 0000002E:000004D8:0001
+== step
+replcounters
+== database | replicated transactions | replication rate trans/sec | replication latency (sec) | replbeginlsn | replnextlsn
+lab_gap | 2 | 0 | 0 | 0x0000002E000004E00001 | 0x0000002E000004E00003
+== Current LSN | Oldest Replicated Begin LSN | Next Replicated End LSN | Last Distributed Backup End LSN | Last Distributed End LSN | Repl Min Hold LSN
+0000002E:000004F0:0026 | NULL | NULL | NULL | NULL | NULL
+0000002E:000004A8:0001 | NULL | NULL | NULL | NULL | NULL
+0000002E:00000490:0001 | NULL | NULL | NULL | NULL | NULL
+0000002E:00000408:0117 | NULL | NULL | NULL | NULL | NULL
+== step
+dbinfo
+== ParentObject | Object | Field | VALUE
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_version | 957
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_createVersion | 957
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_SEVersion | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dvSplitPoint | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbbackupLSN | 45:2792:1 (0x0000002d:00000ae8:0001)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_LastLogBackupTime | 2026-11-24 07:35:43.250
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_nextseqnum | 1900-01-01 00:00:00.000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_status | 0x00010000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_crdate | 2026-11-24 07:35:42.813
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbname | lab_gap
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbid | 1210
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_cmptlevel | 160
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_masterfixups | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_maxDbTimestamp | 2000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbbackupLSN | 45:2792:1 (0x0000002d:00000ae8:0001)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_RebuildLogs | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_differentialBaseLSN | 46:1192:1 (0x0000002e:000004a8:0001)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_RestoreFlags | 0x0000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_checkptLSN | 46:1264:38 (0x0000002e:000004f0:0026)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbccFlags | 2
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_COWLastLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_DirtyPageLSN | 46:1264:38 (0x0000002e:000004f0:0026)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_RecoveryFlags | 0x00000000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_lastxact | 0x44b
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_collation | 872468488
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_relstat | 0x61000000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_PartitionDbFlags | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_familyGUID | 8b2c0761-5b56-4104-99d0-2b2234325187
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_maxLogSpaceUsed | 2998272
+dbi_recoveryForkNameStack | entry 0 | hex (dec) | 0x00000000:00000000:0000 (0:0:0)
+DBINFO @0x0000002330BF86A0 | dbi_recoveryForkNameStack | m_guid | 8b2c0761-5b56-4104-99d0-2b2234325187
+dbi_recoveryForkNameStack | entry 1 | hex (dec) | 0x00000000:00000000:0000 (0:0:0)
+DBINFO @0x0000002330BF86A0 | dbi_recoveryForkNameStack | m_guid | 00000000-0000-0000-0000-000000000000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_differentialBaseGuid | 43303cc7-eb47-4b36-9fd6-bddb3264264a
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_firstSysIndexes | 0001:00000014
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dynamicFileAllocationNewFileID | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_oldestBackupXactLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_lastLogBackupOldestActiveXactLsn | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_lastLogBackupCheckpointLsn | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_versionChangeLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_mdUpgStat | 0x0004
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_category | 0x0000000000000040
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_safetySequence | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbMirrorId | 00000000-0000-0000-0000-000000000000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_pageUndoLsn | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_pageUndoState | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_disabledSequence | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmRedoLsn | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmOldestXactLsn | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_CloneCpuCount | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_CloneMemorySize | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_updSysCatalog | 1900-01-01 00:00:00.000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_LogBackupChainOrigin | 46:1192:1 (0x0000002e:000004a8:0001)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbccLastKnownGood | 1900-01-01 00:00:00.000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_roleSequence | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmHardenedLsn | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_localState | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_safety | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_modDate | 2026-11-24 07:35:42.813
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_verRDB | 268439781
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_delayedDurabilityOption | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_transactionFlags | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_stalePageDetectionOption | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_inMemorydbOption | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_svcBrokerGUID | 6674994f-68f8-4e69-99ef-2d9f647c6d05
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_svcBrokerOptions | 0x00000001
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmLogZeroOutstanding | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmLastGoodRoleSequence | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmRedoQueue | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmRedoQueueType | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_rmidRegistryValueDeleted | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbmConnectionTimeout | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_AuIdNext | 1099511628014
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_MinSkipLsn | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_commitTsOfcheckptLSN | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_dbEmptyVersionState | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_CurrentGeneration | 0
+dbi_EncryptionHistory | Scan 0 | hex (dec) | 0x00000000:00000000:0000 (0:0:0)
+DBINFO @0x0000002330BF86A0 | dbi_EncryptionHistory | EncryptionScanInfo:ScanId | 0
+dbi_EncryptionHistory | Scan 1 | hex (dec) | 0x00000000:00000000:0000 (0:0:0)
+DBINFO @0x0000002330BF86A0 | dbi_EncryptionHistory | EncryptionScanInfo:ScanId | 0
+dbi_EncryptionHistory | Scan 2 | hex (dec) | 0x00000000:00000000:0000 (0:0:0)
+DBINFO @0x0000002330BF86A0 | dbi_EncryptionHistory | EncryptionScanInfo:ScanId | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_latestVersioningUpgradeLSN | 18:65:69 (0x00000012:00000041:0045)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_PendingRestoreOutcomesId | 00000000-0000-0000-0000-000000000000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_ContainmentState | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkRecoveryLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkLogTruncationLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkCompatibilityMode | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkRootFile | 00000000-0000-0000-0000-000000000000
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkRootFileWatermark | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkTrimLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkUpgradeLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_hkUndeployLSN | 0:0:0 (0x00000000:00000000:0000)
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_databaseMaxSizeBytes | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_pvsRowsetIdRegular | 72057594042908672
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_pvsRowsetIdLongTerm | 72057594042974208
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_flavorModelDB | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_verDbOption | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_logReplicaQuorumHardenedBlock | 0
+DBINFO STRUCTURE: | DBINFO @0x0000002330BF86A0 | dbi_status_2 | 0x00000000
+== step
+repl_traninfo
+== fp2p_pub_exists | db_ver | comp_range_address | textinfo_address | fsinfo_address | begin_lsn | commit_lsn | dbid | rows | xdesid | artcache_table_address | server | server_len_in_bytes | database | db_len_in_bytes | originator | originator_len_in_bytes | orig_db | orig_db_len_in_bytes | cmds_in_tran | is_boundedupdate_singleton | begin_update_lsn | delete_lsn | last_end_lsn | fcomplete | fcompensated | fprocessingtext | max_cmds_in_tran | begin_time | commit_time | session_id | session_phase | is_known_cdc_tran | error_count
+-- Changed database context to 'lab_gap'.
+== step
+after reset
+== database | replicated transactions | replication rate trans/sec | replication latency (sec) | replbeginlsn | replnextlsn
+lab_gap | 0 | 0 | 0 | 0x00000000000000000000 | 0x00000000000000000000
+== Current LSN | Oldest Replicated Begin LSN | Next Replicated End LSN | Last Distributed Backup End LSN | Last Distributed End LSN | Repl Min Hold LSN
+0000002E:00000510:0001 | NULL | NULL | NULL | NULL | NULL
+== step | Current LSN | Oldest Replicated Begin LSN | Next Replicated End LSN | Last Distributed Backup End LSN | Last Distributed End LSN | Repl Min Hold LSN
+after cdc disable_db | 0000002F:000001F8:00CA | NULL | NULL | NULL | NULL | NULL
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+== step | Current LSN | Oldest Replicated Begin LSN | Next Replicated End LSN | Last Distributed Backup End LSN | Last Distributed End LSN | Repl Min Hold LSN
+after re-enable | 00000030:000004C8:00F1 | NULL | NULL | NULL | NULL | NULL
+== capture_instance | start_lsn
+dbo_t | 0x0000002F00000BD80036
+-- batch took 380 ms
+-- Changed database context to 'master'.

@@ -1,0 +1,28 @@
+-- Changed database context to 'lab_gap'.
+-- Update mask evaluation will be disabled in net_changes_function because the CLR configuration option is disabled.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- SQLServerAgent is not currently running so it cannot be notified of this action.
+-- Processed 608 pages for database 'lab_gap', file 'lab_gap' on file 1.
+-- Processed 148 pages for database 'lab_gap', file 'lab_gap_log' on file 1.
+-- BACKUP DATABASE successfully processed 756 pages in 0.016 seconds (368.896 MB/sec).
+== commit_lsn | begin_lsn
+0000002E:00000430:0001 | 0000002D:00000B58:0001
+0000002E:00000538:001D | 0000002E:00000538:0001
+0000002E:00000540:002A | 0000002E:00000540:0028
+0000002E:00000548:0008 | 0000002E:00000548:0006
+0000002E:00000550:000B | 0000002E:00000550:0009
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (46:1344:1)
+-- batch took 411 ms
+-- Changed database context to 'lab_gap'.
+== step | released_commit
+released all but the newest | 0000002E:00000548:0008
+== lab_gap | OPENTRAN
+REPL_DIST_OLD_LSN | (0:0:0)
+REPL_NONDIST_OLD_LSN | (46:1360:1)
+-- Changed database context to 'master'.

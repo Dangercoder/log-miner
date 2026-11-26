@@ -1,0 +1,83 @@
+Changed database context to 'master'.
+Processed 376 pages for database 'lm_st', file 'lm_st' on file 1.
+Processed 2 pages for database 'lm_st', file 'lm_st_log' on file 1.
+BACKUP DATABASE successfully processed 378 pages in 0.023 seconds (128.226 MB/sec).
+Changed database context to 'lm_st'.
+Processed 54 pages for database 'lm_st', file 'lm_st_log' on file 1.
+BACKUP LOG successfully processed 54 pages in 0.001 seconds (421.875 MB/sec).
+Processed 8 pages for database 'lm_st', file 'lm_st_log' on file 1.
+BACKUP LOG successfully processed 8 pages in 0.000 seconds (0.000 MB/sec).
+Changed database context to 'master'.
+log_min_lsn|log_end_lsn
+-----------|-----------
+00000039:000004C8:0001|00000039:00000638:0001
+
+what|start|records|first_record|last_record|verdict
+----|-----|-------|------------|-----------|-------
+log_min_lsn|00000039:000004C8:0001|220|00000039:000004C8:0001|00000039:00000628:0003|exact
+
+what|start|records|first_record|last_record|verdict
+----|-----|-------|------------|-----------|-------
+the last record|00000039:00000628:0003|1|00000039:00000628:0003|00000039:00000628:0003|exact
+
+what|start|records|first_record|last_record|verdict
+----|-----|-------|------------|-----------|-------
+a record in the middle|00000039:000004F8:0005|201|00000039:000004F8:0005|00000039:00000628:0003|exact
+
+what|start|error|message|severity
+----|-----|-----|-------|--------
+existing block, no such slot|00000039:000004F8:0FFF|9003|The log scan number (57:1272:4095) passed to log scan in database 'lm_st' is not valid. This error m|20
+
+what|start|records|first_record|last_record|verdict
+----|-----|-------|------------|-----------|-------
+existing block, slot 0|00000039:000004F8:0000|205|00000039:000004F8:0001|00000039:00000628:0003|MOVED
+
+what|start|error|message|severity
+----|-----|-----|-------|--------
+no such block (middle of one)|00000039:000004F9:0001|9004|An error occurred while processing the log for database 'lm_st'.  If possible, restore from backup. |23
+
+what|start|records|first_record|last_record|verdict
+----|-----|-------|------------|-----------|-------
+log_end_lsn|00000039:00000638:0001|12|00000039:00000638:0001|00000039:00000638:000C|exact
+
+what|start|error|message|severity
+----|-----|-----|-------|--------
+far beyond the end, same VLF|00000039:0FFFFFFF:0001|9005|Invalid parameter passed to OpenRowset(DBLog, ...).|16
+
+what|start|error|message|severity
+----|-----|-----|-------|--------
+a VLF that does not exist yet|0FFFFFFF:00000010:0001|9005|Invalid parameter passed to OpenRowset(DBLog, ...).|16
+
+what|start|records|first_record|last_record|verdict
+----|-----|-------|------------|-----------|-------
+a VLF before the log|00000001:00000010:0001|232|00000039:000004C8:0001|00000039:00000638:000C|MOVED
+
+what|start|records|first_record|last_record|verdict
+----|-----|-------|------------|-----------|-------
+start of the first VLF (truncated part?)|00000039:00000010:0001|232|00000039:000004C8:0001|00000039:00000638:000C|MOVED
+
+first_readable_from_min
+-----------------------
+00000039:000004C8:0001
+
+Changed database context to 'master'.
+what|state_desc|is_auto_close_on|collation_if_started|fork|last_log_backup_lsn
+----|----------|----------------|--------------------|----|-------------------
+AUTO_CLOSE, closed|ONLINE|1|NULL|434BEDAC-F4FA-4412-A00A-AAA9270B9BE2|57000000124800001
+
+what|log_min_lsn|log_end_lsn
+----|-----------|-----------
+stats|00000039:000004C8:0001|00000039:00000688:0001
+
+what|records
+----|-------
+read by id|249
+
+what|fork
+----|----
+after the read|434BEDAC-F4FA-4412-A00A-AAA9270B9BE2
+
+what|fork
+----|----
+opened|434BEDAC-F4FA-4412-A00A-AAA9270B9BE2
+

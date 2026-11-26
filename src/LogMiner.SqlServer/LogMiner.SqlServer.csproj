@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LogMiner.SqlServer</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <ProjectReference Include="..\LogMiner.Core\LogMiner.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LogMiner.IntegrationTests" />
+  </ItemGroup>
+</Project>

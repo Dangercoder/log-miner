@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LogMiner.Lab</RootNamespace>
+    <NoWarn>$(NoWarn);CA1303;CA1515;CA2007;CA2100</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" />
+    <ProjectReference Include="..\..\src\LogMiner.SqlServer\LogMiner.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\LogMiner.Nats\LogMiner.Nats.csproj" />
+  </ItemGroup>
+</Project>

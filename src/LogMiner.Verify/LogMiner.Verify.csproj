@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LogMiner.Verify</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>logminer-verify</AssemblyName>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <!-- the library (StreamVerifier) and the program are one assembly: its public types are meant to be public -->
+    <NoWarn>$(NoWarn);CA1515</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NATS.Net" />
+    <PackageReference Include="System.IO.Hashing" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LogMiner.Verify.Tests" />
+  </ItemGroup>
+</Project>

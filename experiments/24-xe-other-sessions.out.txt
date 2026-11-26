@@ -1,0 +1,17 @@
+== what | seconds | loops | other_bytes | other_executions
+not forcing | 0.06 | 3000 | 1442632 | 2
+forcing only my session | 0.16 | 3000 | 1807126 | 3001
+not forcing | 0.06 | 3000 | 1442666 | 2
+forcing only my session | 0.16 | 3000 | 1807126 | 3001
+not forcing | 0.06 | 3000 | 1442666 | 2
+forcing only my session | 0.16 | 3000 | 1807126 | 3001
+-- batch took 696 ms
+== name | target_name | execution_count | execution_duration_ms | total_bytes_generated | create_time
+hkenginexesession | event_file | 0 | 0 | 0 | 2026-11-24 04:54:12.2970000
+system_health | ring_buffer | 426 | 0 | 18785115 | 2026-11-24 04:54:12.5330000
+system_health | event_file | 426 | 1532 | 18785115 | 2026-11-24 04:54:12.5330000
+sp_server_diagnostics session | router | 70026 | 0 | 0 | 2026-11-24 04:54:12.5500000
+telemetry_xevents | ring_buffer | 26697 | 195 | 255193778 | 2026-11-24 15:05:24.6970000
+logminer_lab_mine | ring_buffer | 0 | 0 | 0 | 2026-11-24 15:53:57.8770000
+logminer_lab_other | ring_buffer | 9016 | 3 | 10832206 | 2026-11-24 15:53:57.8730000
+== event_name | event_fire_count | event_fire_average_time | event_fire_min_time | event_fire_max_time

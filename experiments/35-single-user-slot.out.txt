@@ -1,0 +1,56 @@
+
+nothing                          restores ok 25 of 25, refused:    []
+fn_full_dblog from master        restores ok 14 of 25, refused: 3101 x11   [82723 statements; errors 596x17 | 82748 statements; errors 596x13]
+dm_db_log_stats from master      restores ok 25 of 25, refused:    [43932 statements; errors  | 44437 statements; errors ]
+database_recovery_status         restores ok  0 of 25, refused: 3101 x25   [45127 statements; errors  | 49951 statements; errors ]
+sp_executesql inside             restores ok  2 of 25, refused: 3101 x23   [8621 statements; errors 924x48 927x26 952x1294 | 8284 statements; errors 596x1 924x24 927x28 952x1286]
+
+[killed]
+
+== 2026-11-24 23:11:13: the stage 'guard + fn_full_dblog' HUNG THE INSTANCE (16.0.4325.4, RTM-CU build per sqllang.dll 2022.160.4325.4)
+== event log: 17066 'Sql\Ntdbms\storeng\dfs\trans\logtrunc.cpp', line=834, Failed Assertion = 'stLSN != NullLSN' at 23:11:13.418; 17883 (non-yielding) from 23:12:23 on 14 schedulers; none before on this instance in the Application log
+== diagnostics over the dedicated admin connection:
+sid|start_time|command|status|o1|o2|pc|cpu|txt
+---|----------|-------|------|--|--|--|---|---
+51|2026-11-24 23:11:13.447|CONDITIONAL|running|0|160|0|556420|IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'lm_su' AND user_access = 1) RETURN; DECLARE @n int, @d int = DB_ID(N'lm_su'); SELECT @n = COUNT(*) FROM sys.fn_full_dblog(NULL, NULL, @d, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+52|2026-11-24 23:11:05.100|SELECT|running|264|476|0|564769|IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'lm_su' AND user_access = 1) RETURN; DECLARE @n int, @d int = DB_ID(N'lm_su'); SELECT @n = COUNT(*) FROM sys.fn_full_dblog(NULL, NULL, @d, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+61|2026-11-24 23:15:31.677|SELECT|running|32|188|0|298180|SET NOCOUNT ON; SELECT name, user_access_desc, state_desc FROM sys.databases WHERE name='lm_su'; SELECT s.session_id, s.host_process_id AS pid, s.program_name, r.command, r.wait_type, r.wait_time, r.blocking_session_id b, LEFT(t.text,140) txt FROM sys.dm_e
+63|2026-11-24 23:11:01.977|RESTORE DATABASE|running|124|242|100|564869|ALTER DATABASE lm_su SET SINGLE_USER WITH ROLLBACK IMMEDIATE; RESTORE DATABASE lm_su FROM DISK = N'lm_su.bak' WITH REPLACE; ALTER DATABASE lm_su SET MULTI_USER;
+
+name|collisions|spins|spc|sleep_time|backoffs
+----|----------|-----|---|----------|--------
+DBTABLE|107697|20852336151|193620|7198843|3860597
+SQL_MGR|1807132|32542832|18|729|42068
+XDESMGR|714091|27516127|38|2384|111299
+LOCK_HASH|1172494|25811200|22|686|133975
+SOS_CACHESTORE|167477|24209445|144|0|16406
+SOS_RESOURCE_CLERK_LIST|526112|6862138|13|0|39
+LOGFLUSHQ|153452|4912694|32|0|130
+BLOCKER_ENUM|321223|4151803|12|0|49
+
+name|collisions|spins|backoffs
+----|----------|-----|--------
+DBTABLE|107697|21028467951|3893211
+SQL_MGR|1807132|32542832|42068
+XDESMGR|714091|27516127|111299
+LOCK_HASH|1172494|25811200|133975
+SOS_CACHESTORE|167477|24209445|16406
+
+sid|pid|login_time|program_name|status
+---|---|----------|------------|------
+51|2960|2026-11-24 23:11:13.447|.Net SqlClient Data Provider|running
+52|10308|2026-11-24 23:11:02.010|.Net SqlClient Data Provider|running
+53|2960|2026-11-24 23:12:58.507|.Net SqlClient Data Provider|running
+61|21612|2026-11-24 23:15:31.680|sqlcmd|running
+63|13604|2026-11-24 23:11:01.980|.Net SqlClient Data Provider|running
+64|8668|2026-11-24 23:10:45.380|SQLServerCEIP|sleeping
+65|10308|2026-11-24 23:11:40.117|.Net SqlClient Data Provider|running
+70|2960|2026-11-24 23:11:48.470|.Net SqlClient Data Provider|running
+73|10308|2026-11-24 23:13:25.160|.Net SqlClient Data Provider|running
+74|10308|2026-11-24 23:12:15.130|.Net SqlClient Data Provider|running
+75|2960|2026-11-24 23:12:23.480|.Net SqlClient Data Provider|running
+76|10308|2026-11-24 23:12:50.147|.Net SqlClient Data Provider|running
+77|2960|2026-11-24 23:13:33.517|.Net SqlClient Data Provider|running
+81|10308|2026-11-24 23:14:00.173|.Net SqlClient Data Provider|running
+82|2960|2026-11-24 23:14:08.543|.Net SqlClient Data Provider|running
+
