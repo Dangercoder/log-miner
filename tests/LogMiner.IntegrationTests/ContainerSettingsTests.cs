@@ -108,11 +108,30 @@ public sealed class ContainerSettingsTests : IAsyncLifetime, IDisposable
         File.WriteAllText(Path.Combine(_dir, "server-key.pem"), key.ExportPkcs8PrivateKeyPem());
     }
 
-    private Dictionary<string, string> PodEnvironment(string sqlPassword, string natsPassword) => new(StringComparer.Ordinal)
+    /// <summary>The instance the tests use (LOGMINER_IT_CS), as host and port: the service is configured in parts, and has to find the same one.</summary>
+    private static (string Host, string? Port) TestSql()
+    {
+        var source = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(TestServer.ConnectionString()).DataSource;
+        if (source.StartsWith("tcp:", StringComparison.OrdinalIgnoreCase)) source = source[4..];
+        var comma = source.IndexOf(',', StringComparison.Ordinal);
+        var host = comma < 0 ? source : source[..comma];
+        return (host is "." or "(local)" or "localhost" or "" ? "localhost" : host, comma < 0 ? null : source[(comma + 1)..].Trim());
+    }
+
+    private static string SqlDataSource => TestSql() is var (host, port) ? "tcp:" + host + (port is null ? "" : "," + port) : "";
+
+    private Dictionary<string, string> PodEnvironment(string sqlPassword, string natsPassword)
+    {
+        var environment = PodSettings(sqlPassword, natsPassword);
+        if (TestSql().Port is { } port) environment["LogMiner__Sql__Port"] = port;
+        return environment;
+    }
+
+    private Dictionary<string, string> PodSettings(string sqlPassword, string natsPassword) => new(StringComparer.Ordinal)
     {
         ["LogMiner__ServerName"] = "pod-" + _tag,
         ["LogMiner__Databases__0"] = $"lm_it_pod_{_tag}_*",
-        ["LogMiner__Sql__Host"] = "localhost",
+        ["LogMiner__Sql__Host"] = TestSql().Host,
         ["LogMiner__Sql__User"] = Login,
         ["LogMiner__Sql__Password"] = sqlPassword,
         ["LogMiner__Sql__TrustServerCertificate"] = "true", // the local instance has a certificate of its own making
@@ -183,7 +202,7 @@ public sealed class ContainerSettingsTests : IAsyncLifetime, IDisposable
         StartService(PodEnvironment(_password, _natsPassword));
         var ready = 0;
         await UntilAsync(() => (ready = ReadyAsync().GetAwaiter().GetResult()) == 200 && Output.Contains("capturing 1 databases", StringComparison.Ordinal), "ready and capturing");
-        Assert.Contains($"SQL Server: tcp:localhost as login '{Login}', encrypted (Mandatory), server certificate NOT checked", Output, StringComparison.Ordinal);
+        Assert.Contains($"SQL Server: {SqlDataSource} as login '{Login}', encrypted (Mandatory), server certificate NOT checked", Output, StringComparison.Ordinal);
         Assert.Contains($"sink nats-jetstream: stream POD on nats://127.0.0.1:{_port} as user 'lm', TLS Require, CA {Ca}", Output, StringComparison.Ordinal);
 
         await using (var sql = new SqlConnection(TestServer.ConnectionString(_db)))
